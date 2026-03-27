@@ -314,6 +314,45 @@ node pipeline/render-video.js output.mp4 scene_plan.json
 
 ---
 
+## Regras de Posicionamento de Texto sobre Imagens
+
+Quando fotos reais são usadas como background (em imagens ou vídeos), o sistema deve **analisar a imagem antes** de posicionar texto. Isso evita:
+
+- Texto cobrindo rostos de pessoas
+- Texto cortado fora do frame
+- Texto ilegível sobre áreas movimentadas
+
+### Regras obrigatórias
+
+1. **Visualizar a imagem** antes de gerar o HTML — identificar rostos, produto, áreas livres
+2. **Nunca cobrir rostos** — posicionar texto em zonas livres (fundo, bordas, áreas desfocadas)
+3. **Garantir que texto cabe no frame** — padding mínimo 40px, `overflow: hidden`, testar mentalmente
+4. **Gradientes localizados** — cobrir só a zona do texto (opacidade 0.4-0.7), não a imagem inteira
+
+### Zonas seguras por tipo de imagem
+
+| Imagem com... | Onde colocar texto |
+|---|---|
+| Pessoas no centro | Rodapé (bottom 25%) ou topo (top 20%) |
+| Pessoas na esquerda | Direita (right 40%) |
+| Pessoas na direita | Esquerda (left 40%) |
+| Produto no centro | Topo ou rodapé com gradiente |
+| Paisagem/fundo | Centro com vinheta radial |
+| Texto já na imagem | Não adicionar texto na mesma área |
+
+### Checklist antes de renderizar
+
+- [ ] Imagem de background visualizada
+- [ ] Rostos/produto identificados
+- [ ] Texto posicionado em área livre
+- [ ] Todo texto cabe dentro do frame (1080x1080 ou 1080x1920)
+- [ ] Padding de 40px nas bordas
+- [ ] Gradiente aplicado apenas na zona do texto
+
+Estas regras se aplicam tanto ao Ad Creative Designer (imagens estáticas) quanto ao Video Ad Specialist (cenas de vídeo com background de foto).
+
+---
+
 ## Efeitos de Câmera e Animações de Texto (Remotion)
 
 O sistema de vídeo dinâmico suporta múltiplos efeitos de câmera sobre imagens de fundo e animações de texto. Cada cena no `scene_plan.json` pode especificar seus próprios efeitos, ou o sistema escolhe automaticamente baseado no tipo de cena e na descrição visual do roteiro.

@@ -294,8 +294,55 @@ All three files must be present before the task is considered complete.
 - Visual hierarchy: headline dominates, CTA is unmissable
 - One primary focal point per layout (product or lifestyle image — not both competing)
 - Platform format must match spec (square for Instagram feed, vertical for Stories)
-- Never place text over a busy area of the background image
-- **Nanobanana Limitation:** Nanobanana cannot generate transparent/no background images cleanly. Instead, generate a fitting solid or textured background for the product image, and apply a CSS frame (like a circular crop using `border-radius: 50%` and a border) to integrate it cleanly. Make sure the frame design matches the premium vibe, and ensure the product image inside remains straight and not tilted.
+
+## CRITICAL: Regras de Posicionamento de Texto sobre Imagens
+
+Quando usar fotos reais (stock, IA ou locais) como background, SEMPRE seguir estas regras:
+
+### 1. Analisar a imagem ANTES de posicionar texto
+- VISUALIZAR a imagem de background antes de gerar o HTML
+- Identificar onde estão: rostos, produto, elementos importantes
+- Posicionar texto SOMENTE em áreas livres (céu, fundo desfocado, bordas vazias)
+
+### 2. NUNCA cobrir rostos ou produto
+- Texto NÃO pode sobrepor rostos de pessoas
+- Texto NÃO pode cobrir o produto (lata, copo, etc.)
+- Se a imagem tem pessoas no centro, usar texto no topo ou rodapé
+- Se a imagem tem pessoas na esquerda, usar texto na direita (e vice-versa)
+
+### 3. Garantir que TODO o texto cabe no frame
+- O HTML deve ter EXATAMENTE as dimensões do output (1080x1080 ou 1080x1920)
+- Usar `overflow: hidden` no container
+- Todo texto deve ter `padding` suficiente das bordas (mínimo 40px)
+- TESTAR mentalmente: "se eu cortar em 1080px, o texto aparece inteiro?"
+- Headlines grandes (>60px) precisam de mais margem
+- Se o texto é longo, reduzir o font-size em vez de ultrapassar o frame
+
+### 4. Usar gradientes para legibilidade
+- Gradiente escuro onde o texto é claro
+- Gradiente claro onde o texto é escuro
+- Gradiente deve cobrir APENAS a zona do texto, não a imagem inteira
+- Opacidade do gradiente: 0.4-0.7 (suficiente para ler, sem matar a foto)
+
+### 5. Zonas seguras por tipo de imagem
+
+| Imagem com... | Zona segura para texto |
+|---|---|
+| Pessoas no centro | Rodapé (bottom 25%) ou topo (top 20%) |
+| Pessoas na esquerda | Direita (right 40%) |
+| Pessoas na direita | Esquerda (left 40%) |
+| Produto no centro | Topo ou rodapé com gradiente |
+| Paisagem/fundo | Centro com vinheta radial |
+| Texto já na imagem | Não adicionar mais texto sobre a mesma área |
+
+### 6. Checklist obrigatório antes de renderizar
+- [ ] Visualizei a imagem de background
+- [ ] Identifiquei rostos/produto/elementos importantes
+- [ ] Texto posicionado em área livre
+- [ ] Nenhum rosto coberto por texto ou gradiente pesado
+- [ ] Todo o texto cabe dentro de 1080x1080 (ou 1080x1920)
+- [ ] Testei com padding de 40px nas bordas
+- [ ] Gradiente aplicado apenas na zona do texto
 ## Troubleshooting
 
 ### User doesn't specify image assets
