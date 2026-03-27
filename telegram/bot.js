@@ -63,6 +63,7 @@ bot.command('start', async (ctx) => {
     `/status — ver status do pipeline\n` +
     `/outputs — listar campanhas geradas\n` +
     `/enviar &lt;pasta&gt; — receber arquivos da campanha\n` +
+    `/fix &lt;descricao&gt; — corrigir algo no sistema\n` +
     `/novochat — limpar historico\n` +
     `/help — este menu\n\n` +
     `Ou simplesmente escreva uma mensagem e eu respondo como o Claude.`,
@@ -1197,6 +1198,145 @@ function runClaude(prompt, agentName, callback) {
 
   // 10 min timeout
   setTimeout(() => { child.kill('SIGTERM'); }, 600000);
+}
+
+// ── /fix <description> ──────────────────────────────────────────────────────
+// Runs Claude Code autonomously to fix something in the codebase.
+// Reports back with what changed (git diff summary).
+
+bot.command('fix', async (ctx) => {
+  const description = ctx.match?.trim();
+  if (!description) {
+    return ctx.reply(
+      'Use: /fix <descricao do problema>\n\n' +
+      'Exemplos:\n' +
+      '<code>/fix o brief esta sendo cortado no card de confirmacao</code>\n' +
+      '<code>/fix adicionar suporte a reels no gerador de imagens</code>\n' +
+      '<code>/fix o video nao segue o timing do audio</code>',
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  const chatId = String(ctx.chat.id);
+
+  await ctx.reply(
+    `Entendido. Vou analisar e corrigir:\n\n<i>"${description}"</i>\n\nAguarde — isso pode levar alguns minutos...`,
+    { parse_mode: 'HTML' }
+  );
+
+  const claudePath = '/home/nmaldaner/.local/bin/claude';
+
+  const prompt = `You are Claude Code working on the Times MKT social media automation project at ${PROJECT_ROOT}.
+
+Task: ${description}
+
+Instructions:
+- Read the relevant files first to understand the current code
+- Make the necessary fixes
+- Do NOT run the pipeline or start any long-running processes
+- Do NOT restart the bot
+- After making changes, run: git diff --stat to confirm what changed
+- Keep changes minimal and focused on the reported issue`;
+
+  const child = spawn(claudePath, [
+    '-p', prompt,
+    '--dangerously-skip-permissions',
+    '--model', 'sonnet',
+  ], {
+    cwd: PROJECT_ROOT,
+    env: { ...process.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let stdout = '';
+  let stderr = '';
+
+  child.stdout.on('data', d => { stdout += d.toString(); });
+  child.stderr.on('data', d => { stderr += d.toString(); });
+
+  // Progress ping every 30s
+  const ping = setInterval(() => {
+    ctx.api.sendChatAction(chatId, 'typing').catch(() => {});
+  }, 30000);
+
+  // Timeout: 10 min
+  const timeout = setTimeout(() => {
+    child.kill('SIGTERM');
+  }, 600000);
+
+  child.on('error', (err) => {
+    clearInterval(ping);
+    clearTimeout(timeout);
+    ctx.reply(`Erro ao iniciar Claude: ${err.message}`);
+  });
+
+  child.on('close', async (code) => {
+    clearInterval(ping);
+    clearTimeout(timeout);
+
+    // Get git diff summary of what changed
+    let diffSummary = '';
+    try {
+      const { execFileSync } = require('child_process');
+      diffSummary = execFileSync('git', ['diff', '--stat', 'HEAD'], {
+        cwd: PROJECT_ROOT, encoding: 'utf-8',
+      }).trim();
+      if (!diffSummary) {
+        diffSummary = execFileSync('git', ['diff', '--stat'], {
+          cwd: PROJECT_ROOT, encoding: 'utf-8',
+        }).trim();
+      }
+    } catch (_) {}
+
+    if (code !== 0) {
+      const errSnippet = stderr.slice(-500) || stdout.slice(-500);
+      return ctx.reply(
+        `Correcao falhou (exit ${code}).\n\n<pre>${escapeHtml(errSnippet)}</pre>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    // Build response
+    const lines = [`✅ <b>Correcao concluida</b>`];
+
+    if (diffSummary) {
+      lines.push(`\n<b>Arquivos alterados:</b>\n<pre>${escapeHtml(diffSummary)}</pre>`);
+    } else {
+      lines.push('\nNenhum arquivo alterado — pode ser que ja estava correto.');
+    }
+
+    // Show last meaningful lines of Claude output (skip tool call noise)
+    const outputLines = stdout.split('\n').filter(l => l.trim() && !l.startsWith('{') && !l.startsWith('['));
+    const summary = outputLines.slice(-8).join('\n').trim();
+    if (summary) {
+      lines.push(`\n<b>Resumo:</b>\n<pre>${escapeHtml(summary.slice(0, 800))}</pre>`);
+    }
+
+    // Auto-restart bot if bot.js was changed
+    const botChanged = diffSummary.includes('bot.js') || diffSummary.includes('session.js');
+    if (botChanged) {
+      lines.push('\n<i>bot.js foi alterado — reiniciando em 3s...</i>');
+    }
+
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+
+    if (botChanged) {
+      setTimeout(() => {
+        const { spawn: spawnRestart } = require('child_process');
+        spawnRestart('node', ['telegram/bot.js'], {
+          cwd: PROJECT_ROOT,
+          detached: true,
+          stdio: 'ignore',
+          env: { ...process.env },
+        }).unref();
+        process.exit(0);
+      }, 3000);
+    }
+  });
+});
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Arg parser ──────────────────────────────────────────────────────────────
