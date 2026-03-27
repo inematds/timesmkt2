@@ -560,7 +560,7 @@ bot.command('campanha', async (ctx) => {
       '  --platforms instagram,youtube,threads\n' +
       '  --images N\n' +
       '  --videos N\n' +
-      '  --img-source brand|pexels|generate\n' +
+      '  --img-source brand|pexels|api\n' +
       '  --skip-research / --skip-image / --skip-video\n\n' +
       'Ou escreva livremente o que quer na campanha — eu organizo e confirmo antes de rodar.'
     );
@@ -912,7 +912,7 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   if (payload.skip_image)    skipFlags.push('imagens');
   if (payload.skip_video)    skipFlags.push('video');
 
-  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (stock)', generate: 'API de geracao' };
+  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (gratis)', api: 'API de geracao (paga)' };
 
   const lines = [
     `<b>Campanha pronta para rodar — confirme:</b>\n`,
@@ -982,7 +982,7 @@ Rules:
 - task_name: derive from the campaign theme, short and snake_case
 - image_count: default 5 for carousel; use what user says
 - video_count: how many videos requested (default 1)
-- image_source: "brand" if user mentions brand images; "pexels" if stock photos; "generate" if AI generation
+- image_source: "brand" if user mentions brand images; "pexels" if free stock photos; "api" if paid AI image generation
 - campaign_brief: comprehensive summary of everything the user described
 - Return ONLY the JSON object, no markdown, no explanation`;
 

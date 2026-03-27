@@ -199,7 +199,7 @@ Each story has one bold key message with large text.`;
 
   // Build image source instructions based on image_source field
   let imageSourceSection = '';
-  if (image_source === 'generate') {
+  if (image_source === 'api') {
     imageSourceSection = `
 STEP 2 — Image source: AI GENERATION
 - Do NOT use brand photos as backgrounds
