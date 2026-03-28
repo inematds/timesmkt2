@@ -572,11 +572,42 @@ Each story has one bold key message with large text.`;
   if (image_source === 'api') {
     const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
     const useBrand = job.data.use_brand_overlay !== false;
+
+    // Read creative_brief.json for per-slide visual descriptions
+    let scenePurposes = [];
+    let sceneDescriptions = [];
+    const briefPath = path.resolve(PROJECT_ROOT, output_dir, 'creative', 'creative_brief.json');
+    if (fs.existsSync(briefPath)) {
+      try {
+        const brief = JSON.parse(fs.readFileSync(briefPath, 'utf-8'));
+        // Extract visual descriptions from carousel_structure or photography_style
+        if (brief.carousel_structure) {
+          const slideKeys = Object.keys(brief.carousel_structure)
+            .filter(k => k.startsWith('slide_'))
+            .sort();
+          sceneDescriptions = slideKeys.map(k => brief.carousel_structure[k].conceito_visual || '');
+          scenePurposes = slideKeys.map(k => {
+            const tema = (brief.carousel_structure[k].tema || '').toLowerCase();
+            if (tema.includes('hook')) return 'hook';
+            if (tema.includes('cta')) return 'cta';
+            return 'solution';
+          });
+        }
+        // Fallback: use photography_style as base description for all images
+        if (sceneDescriptions.filter(Boolean).length === 0 && brief.visual_direction?.photography_style) {
+          sceneDescriptions = Array(image_count).fill(brief.visual_direction.photography_style);
+        }
+        log(output_dir, 'ad_creative_designer', `Creative brief loaded: ${sceneDescriptions.length} visual descriptions`);
+      } catch (e) {
+        log(output_dir, 'ad_creative_designer', `Could not parse creative_brief.json: ${e.message}`);
+      }
+    }
+
     log(output_dir, 'ad_creative_designer', `Generating ${image_count} images via ${providerName} (${model}, brand=${useBrand})...`);
     try {
       apiGeneratedAssets = await generateApiImages(
         output_dir, project_dir, model, image_count, image_formats, campaign_brief, useBrand,
-        [], [], providerName
+        scenePurposes, sceneDescriptions, providerName
       );
       log(output_dir, 'ad_creative_designer', `Generated ${apiGeneratedAssets.length} images → ${output_dir}/imgs/`);
     } catch (err) {
