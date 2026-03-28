@@ -17,6 +17,7 @@ const path = require('path');
 // ── Agent definitions ─────────────────────────────────────────────────────────
 
 const AGENTS = [
+  // ── Stage 1: Research, Strategy & Narrative ──────────────────────────────
   {
     name: 'research_agent',
     label: 'Research Agent',
@@ -32,40 +33,92 @@ const AGENTS = [
     skipFlag: 'skip_research', // skipped together with research
   },
   {
+    name: 'copywriter_agent',
+    label: 'Copywriter Agent (Narrativa)',
+    dependencies: ['research_agent', 'creative_director'],
+    skippable: false,
+  },
+  // ── Stage 2: Visual Production ───────────────────────────────────────────
+  {
     name: 'ad_creative_designer',
     label: 'Ad Creative Designer',
-    dependencies: ['research_agent', 'creative_director'],
+    dependencies: ['creative_director', 'copywriter_agent'],
     skippable: true,
     skipFlag: 'skip_image',
   },
   {
-    name: 'video_ad_specialist',
-    label: 'Video Ad Specialist',
-    dependencies: ['research_agent', 'creative_director'],
+    name: 'video_editor_agent',
+    label: 'Video Editor Agent',
+    dependencies: ['creative_director', 'copywriter_agent'],
     skippable: true,
     skipFlag: 'skip_video',
   },
+  // ── Stage 4: Platform Agents ─────────────────────────────────────────────
+  // Each agent is a specialist for its platform — knows formats, rules, and
+  // can request rework (new video format, image crop, etc.) from stages 2-3.
+  // Only agents matching platform_targets in the payload are enqueued.
   {
-    name: 'copywriter_agent',
-    label: 'Copywriter Agent',
-    dependencies: ['research_agent', 'creative_director'],
-    skippable: false,
+    name: 'platform_instagram',
+    label: 'Instagram Agent',
+    dependencies: ['ad_creative_designer', 'copywriter_agent'],
+    skippable: true,
+    platformFlag: 'instagram',
   },
+  {
+    name: 'platform_youtube',
+    label: 'YouTube Agent',
+    dependencies: ['video_editor_agent', 'copywriter_agent'],
+    skippable: true,
+    platformFlag: 'youtube',
+  },
+  {
+    name: 'platform_tiktok',
+    label: 'TikTok Agent',
+    dependencies: ['video_editor_agent', 'copywriter_agent'],
+    skippable: true,
+    platformFlag: 'tiktok',
+  },
+  {
+    name: 'platform_facebook',
+    label: 'Facebook Agent',
+    dependencies: ['ad_creative_designer', 'video_editor_agent', 'copywriter_agent'],
+    skippable: true,
+    platformFlag: 'facebook',
+  },
+  {
+    name: 'platform_threads',
+    label: 'Threads Agent',
+    dependencies: ['copywriter_agent'],
+    skippable: true,
+    platformFlag: 'threads',
+  },
+  {
+    name: 'platform_linkedin',
+    label: 'LinkedIn Agent',
+    dependencies: ['ad_creative_designer', 'copywriter_agent'],
+    skippable: true,
+    platformFlag: 'linkedin',
+  },
+  // ── Stage 5: Distribution ────────────────────────────────────────────────
   {
     name: 'distribution_agent',
     label: 'Distribution Agent',
-    dependencies: ['ad_creative_designer', 'video_ad_specialist', 'copywriter_agent'],
+    dependencies: [], // dynamically resolved from active platform agents
     skippable: false,
   },
 ];
 
-// ── v3 Stage definitions ──────────────────────────────────────────────────────
+// All platform agent names (used by enqueueStage to filter by platform_targets)
+const PLATFORM_AGENTS = AGENTS.filter(a => a.platformFlag).map(a => a.name);
+
+// ── Stage definitions ────────────────────────────────────────────────────────
 
 const STAGES = {
-  stage1: ['research_agent', 'creative_director'],
-  stage2: ['ad_creative_designer', 'copywriter_agent'],
-  stage3: ['video_ad_specialist'],
-  stage4: ['distribution_agent'],
+  stage1: ['research_agent', 'creative_director', 'copywriter_agent'],
+  stage2: ['ad_creative_designer'],
+  stage3: ['video_editor_agent'],
+  stage4: PLATFORM_AGENTS,
+  stage5: ['distribution_agent'],
 };
 
 // ── Payload validation ────────────────────────────────────────────────────────
@@ -218,7 +271,13 @@ async function enqueueStage(payload, agentNames) {
   const jobResults = [];
 
   for (const agent of stageAgentDefs) {
-    const isSkipped = agent.skippable && payload[agent.skipFlag];
+    // Platform agents: skip if not in platform_targets
+    if (agent.platformFlag && !platform_targets.includes(agent.platformFlag)) {
+      console.log(`  ⏭  ${agent.label} — not in platform_targets`);
+      continue;
+    }
+
+    const isSkipped = agent.skippable && agent.skipFlag && payload[agent.skipFlag];
     if (isSkipped) {
       console.log(`  ⏭  ${agent.label} — skipped`);
       continue;

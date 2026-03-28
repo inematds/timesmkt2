@@ -7,9 +7,11 @@
  * Usage: node telegram/bot.js
  */
 
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+
 const { Bot, InputFile } = require('grammy');
 const fs = require('fs');
-const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 
 const https = require('https');
@@ -56,7 +58,7 @@ bot.command('start', async (ctx) => {
   const s = session.get(chatId);
 
   await ctx.reply(
-    `Ola! Sou o bot do <b>Times MKT</b>.\n\n` +
+    `Ola! Sou o bot do <b>ITAGMKT</b>.\n\n` +
     `Projeto ativo: <code>${s.projectDir}</code>\n\n` +
     `Comandos:\n` +
     `/projetos — listar projetos\n` +
@@ -127,7 +129,7 @@ bot.command('help', async (ctx) => {
 
 bot.command('helpcampanha', async (ctx) => {
   await ctx.reply(
-    `<b>PIPELINE COMPLETO — ATMKT v3</b>\n\n` +
+    `<b>PIPELINE COMPLETO — ITAGMKT v4</b>\n\n` +
 
     `O pipeline roda em <b>4 etapas com aprovação</b>:\n` +
     `  <b>1.</b> Pesquisa + Brief Criativo\n` +
@@ -682,7 +684,7 @@ bot.command('status', async (ctx) => {
   const cv = s.campaignV3;
   let approvalStatus = '';
   if (cv?.pendingApproval) {
-    const stageLabels = { 1: 'Brief Criativo', 2: 'Imagens & Copy', 3: 'Roteiro de Vídeo', 4: 'Distribuição' };
+    const stageLabels = { 1: 'Brief & Narrativa', 2: 'Visuais (Imagens & Vídeo)', 3: 'Copy de Plataforma', 4: 'Distribuição' };
     approvalStatus = `\n⏳ <b>Aguardando aprovação — Etapa ${cv.pendingApproval.stage}: ${stageLabels[cv.pendingApproval.stage] || ''}</b>`;
   }
 
@@ -1066,7 +1068,7 @@ function buildPayload(taskName, opts, projectDir, today) {
     task_name: taskName.replace(/\s+/g, '_').toLowerCase(),
     task_date: opts.date || today,
     project_dir: projectDir,
-    platform_targets: opts.platforms ? opts.platforms.split(',') : ['instagram', 'youtube', 'threads'],
+    platform_targets: opts.platforms ? opts.platforms.split(',') : ['instagram', 'youtube', 'threads', 'facebook', 'tiktok', 'linkedin'],
     language: opts.lang || 'pt-BR',
     skip_research: opts['skip-research'] === true,
     skip_image: opts['skip-image'] === true,
@@ -1075,7 +1077,7 @@ function buildPayload(taskName, opts, projectDir, today) {
     image_formats: ['carousel_1080x1080', 'story_1080x1920'],
     video_count: parseInt(opts.videos || '1', 10),
     image_source: opts['img-source'] || 'brand',
-    image_model: opts['img-model'] || process.env.KIE_DEFAULT_MODEL || 'z-image',
+    image_model: opts['img-model'] || process.env.KIE_DEFAULT_MODEL || (process.env.IMAGE_PROVIDER === 'pollinations' ? 'flux' : 'z-image'),
     use_brand_overlay: opts['brand-overlay'] !== 'false',
     campaign_brief: opts.brief || '',
   };
@@ -1089,14 +1091,20 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   if (payload.skip_image)    skipFlags.push('imagens');
   if (payload.skip_video)    skipFlags.push('video');
 
-  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (gratis)', api: 'KIE API (geração)' };
+  const activeProvider = process.env.IMAGE_PROVIDER || 'kie';
+  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (gratis)', api: `${activeProvider === 'pollinations' ? 'Pollinations' : 'KIE'} API (geração)` };
   const modelLabels = {
+    // KIE
     'z-image': 'Z-Image', 'z-image-turbo': 'Z-Image Turbo',
     'flux-kontext-pro': 'Flux Pro', 'flux-kontext-max': 'Flux Max', 'gpt-image-1': 'GPT-Image-1',
+    // Pollinations
+    'flux': 'FLUX Schnell', 'zimage': 'Z-Image Turbo (2x)', 'kontext': 'FLUX Kontext',
+    'gptimage': 'GPT Image Mini', 'nanobanana-pro': 'Gemini 3 Pro',
   };
 
   const isApi = payload.image_source === 'api';
-  const modelLabel = modelLabels[payload.image_model] || payload.image_model || 'Z-Image';
+  const defaultModelLabel = activeProvider === 'pollinations' ? 'FLUX Schnell' : 'Z-Image';
+  const modelLabel = modelLabels[payload.image_model] || payload.image_model || defaultModelLabel;
   const brandOverlay = payload.use_brand_overlay !== false;
 
   const lines = [
@@ -1126,7 +1134,7 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   const modes = payload.approval_modes || {};
   const modeLabel = { humano: '👤', agente: '🤖', auto: '⚡' };
   const modeNames = { humano: 'humano', agente: 'agente', auto: 'auto' };
-  const stageNames = { stage1: 'Brief', stage2: 'Criativos', stage3: 'Vídeo', stage4: 'Distribuição' };
+  const stageNames = { stage1: 'Brief & Narrativa', stage2: 'Visuais', stage3: 'Copy Plataforma', stage4: 'Distribuição' };
   const modeParts = Object.entries(stageNames).map(([key, label]) => {
     const m = modes[key] || 'humano';
     return `${modeLabel[m] || '👤'} ${label}`;
@@ -1254,7 +1262,7 @@ function handleChatMessage(ctx, chatId, s, text) {
     return `${prefix}: ${m.content}`;
   }).join('\n\n');
 
-  const systemContext = `You are the assistant for the Times MKT marketing automation system.
+  const systemContext = `You are the assistant for the ITAGMKT marketing automation system.
 The active project is: ${s.projectDir}
 Project root contains: skills/ (agent skills), pipeline/ (BullMQ orchestrator), prj/ (client projects).
 Each project in prj/ has: assets/, knowledge/ (brand_identity.md, product_campaign.md, platform_guidelines.md), outputs/.
@@ -1435,7 +1443,7 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
     JSON.stringify({ chatId: String(chatId), ts: Date.now() }));
 
   const approvalModes = payload.approval_modes || {
-    stage1: 'humano', stage2: 'humano', stage3: 'humano', stage4: 'humano',
+    stage1: 'humano', stage2: 'humano', stage3: 'humano', stage4: 'humano', stage5: 'humano',
   };
 
   session.setCampaignV3(chatId, {
@@ -1443,13 +1451,13 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
     outputDir,
     currentStage: 1,
     pendingApproval: null,
-    stageResults: { stage1: null, stage2: null, stage3: null, stage4: null },
+    stageResults: { stage1: null, stage2: null, stage3: null, stage4: null, stage5: null },
     approvalModes,
     notifications: payload.notifications !== false,
   });
 
   // Track which stage-2/3/4 agents have completed (in-memory, not in session)
-  const stageAgentsDone = { stage2: new Set(), stage3: new Set(), stage4: new Set() };
+  const stageAgentsDone = { stage2: new Set(), stage3: new Set(), stage4: new Set(), stage5: new Set() };
 
   // ctx expires after the Telegram update — use bot.api for async messages
   const botCtx = {
@@ -1545,7 +1553,7 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
             .catch(() => {});
         }
 
-        // Stage 2: ad_creative_designer + copywriter_agent
+        // Stage 2: ad_creative_designer
         if (STAGES.stage2.includes(agentName)) {
           stageAgentsDone.stage2.add(agentName);
           const active2 = STAGES.stage2.filter(a =>
@@ -1559,13 +1567,12 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
           }
         }
 
-        // Stage 3: video_ad_specialist
-        if (STAGES.stage3.includes(agentName)) {
+        // Stage 3: video (video_editor_agent / video_quick / video_pro)
+        if (STAGES.stage3.includes(agentName) || agentName === 'video_quick' || agentName === 'video_pro') {
           stageAgentsDone.stage3.add(agentName);
-          const active3 = STAGES.stage3.filter(a =>
-            !(a === 'video_ad_specialist' && cv.payload.skip_video)
-          );
-          if (active3.every(a => stageAgentsDone.stage3.has(a))) {
+          const active3 = cv.payload.skip_video ? [] : ['done'];
+          const videoDone = cv.payload.skip_video || stageAgentsDone.stage3.size > 0;
+          if (videoDone) {
             session.updateCampaignV3Stage(chatId, 3, { status: 'done' });
             sendStageApprovalRequest(botCtx, chatId, 3).catch(e =>
               console.error('[v3] stage3 approval error:', e.message)
@@ -1573,15 +1580,32 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
           }
         }
 
-        // Stage 4: distribution complete
-        if (STAGES.stage4.includes(agentName)) {
+        // Stage 4: platform agents — filter by platform_targets
+        if (STAGES.stage4.includes(agentName) || agentName.startsWith('platform_')) {
           stageAgentsDone.stage4.add(agentName);
-          if (STAGES.stage4.every(a => stageAgentsDone.stage4.has(a))) {
+          // Only count platform agents that match platform_targets
+          const targets = cv.payload.platform_targets || [];
+          const activePlatforms = STAGES.stage4.filter(a => {
+            const flag = a.replace('platform_', '');
+            return targets.includes(flag);
+          });
+          if (activePlatforms.length === 0 || activePlatforms.every(a => stageAgentsDone.stage4.has(a))) {
+            session.updateCampaignV3Stage(chatId, 4, { status: 'done' });
+            sendStageApprovalRequest(botCtx, chatId, 4).catch(e =>
+              console.error('[v3] stage4 approval error:', e.message)
+            );
+          }
+        }
+
+        // Stage 5: distribution complete
+        if (STAGES.stage5.includes(agentName)) {
+          stageAgentsDone.stage5.add(agentName);
+          if (STAGES.stage5.every(a => stageAgentsDone.stage5.has(a))) {
             worker.kill('SIGTERM');
             session.clearRunningTask(chatId);
             session.clearCampaignV3(chatId);
             const folderName = payload.task_name;
-            bot.api.sendMessage(chatId, `🎉 Campanha <b>${payload.task_name}</b> publicada!`, { parse_mode: 'HTML' })
+            bot.api.sendMessage(chatId, `Campanha <b>${payload.task_name}</b> pronta!`, { parse_mode: 'HTML' })
               .then(() => sendCampaignReport(botCtx, absOutputDir, folderName))
               .catch(() => {});
           }
@@ -1619,7 +1643,7 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
   }, 5400000);
 
   // Enqueue stage 1
-  ctx.reply('Iniciando etapa 1/4 — Pesquisa & Brief Criativo...').then(() => {
+  ctx.reply('Iniciando etapa 1/5 — Pesquisa & Brief Criativo...').then(() => {
     _enqueueStage(payload, STAGES.stage1)
       .then(() => ctx.reply('Pesquisa em andamento. Aguarde o brief criativo...').catch(() => {}))
       .catch(e => ctx.reply(`Erro ao enfileirar etapa 1: ${e.message}`).catch(() => {}));
@@ -1638,8 +1662,8 @@ async function runStage(ctx, chatId, stageNumber) {
   const agentNames = STAGES[stageKey];
   if (!agentNames) { await send('Pipeline v3 completo!'); return; }
 
-  const labels = { 2: 'Criação de imagens & copy', 3: 'Produção de vídeo', 4: 'Distribuição' };
-  await send(`Avançando para etapa ${stageNumber}/4 — ${labels[stageNumber] || `Etapa ${stageNumber}`}...`);
+  const labels = { 2: 'Imagens (Ads)', 3: 'Video', 4: 'Copy de plataforma', 5: 'Distribuicao' };
+  await send(`Avancando para etapa ${stageNumber}/5 — ${labels[stageNumber] || `Etapa ${stageNumber}`}...`);
 
   try {
     await _enqueueStage(cv.payload, agentNames);
@@ -1654,7 +1678,7 @@ function runAgentReview(ctx, chatId, stage, outputDir) {
   if (!cv) return;
 
   const absOutputDir = path.resolve(PROJECT_ROOT, outputDir);
-  const stageLabels = { 1: 'Brief Criativo', 2: 'Imagens & Copy', 3: 'Vídeo', 4: 'Distribuição' };
+  const stageLabels = { 1: 'Brief & Narrativa', 2: 'Visuais (Imagens & Vídeo)', 3: 'Copy de Plataforma', 4: 'Distribuição' };
 
   const prompt = `You are the Agente Revisor. Follow the skill defined in skills/agente-revisor/SKILL.md exactly.
 
@@ -1738,61 +1762,113 @@ async function sendStageApprovalRequest(ctx, chatId, stage) {
       }
     }
     await ctx.reply(
-      '<b>Brief criativo pronto — Etapa 1/4 ✅</b>\n\n' +
+      '<b>Brief criativo pronto — Etapa 1/5 ✅</b>\n\n' +
       'Responda <b>sim</b> para avançar para imagens e copy.\n' +
       '<b>não</b> para cancelar a campanha.\n' +
       'Ou descreva ajustes.',
       { parse_mode: 'HTML' }
     );
   } else if (stage === 2) {
-    // 1. Copy first
-    const lines = ['<b>Imagens e copy prontos — Etapa 2/4 ✅</b>\n'];
-    const captionPath = path.join(PROJECT_ROOT, outputDir, 'copy', 'instagram_caption.txt');
-    const threadsPath = path.join(PROJECT_ROOT, outputDir, 'copy', 'threads_post.txt');
-    if (fs.existsSync(captionPath)) {
-      lines.push('<b>📝 Instagram:</b>');
-      lines.push(`<i>${escapeHtml(fs.readFileSync(captionPath, 'utf-8').slice(0, 300))}</i>\n`);
-    }
-    if (fs.existsSync(threadsPath)) {
-      lines.push('<b>📝 Threads:</b>');
-      lines.push(`<i>${escapeHtml(fs.readFileSync(threadsPath, 'utf-8').slice(0, 200))}</i>\n`);
-    }
+    // Show images produced by Ad Creative Designer
+    const lines = ['<b>Imagens prontas — Etapa 2/5 ✅</b>\n'];
     await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
 
-    // 2. Images after copy
+    // Send generated images
     const imgsDir = path.join(PROJECT_ROOT, outputDir, 'imgs');
-    if (fs.existsSync(imgsDir)) {
-      const imgFiles = fs.readdirSync(imgsDir)
-        .filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f) && f !== 'approved.json')
-        .sort();
-      for (const f of imgFiles) {
-        await bot.api.sendPhoto(chatId, new InputFile(path.join(imgsDir, f)), {
-          caption: `🖼 ${f}`,
-        }).catch(e => console.error('[stage2 img]', e.message));
+    const adsDir = path.join(PROJECT_ROOT, outputDir, 'ads');
+    for (const dir of [imgsDir, adsDir]) {
+      if (fs.existsSync(dir)) {
+        const imgFiles = fs.readdirSync(dir)
+          .filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f) && !f.includes('approved'))
+          .sort();
+        for (const f of imgFiles) {
+          await bot.api.sendPhoto(chatId, new InputFile(path.join(dir, f)), {
+            caption: f,
+          }).catch(e => console.error('[stage2 img]', e.message));
+        }
       }
     }
 
-    // 3. Approval question
     await ctx.reply(
-      'Responda <b>sim</b> para avançar para vídeo.\nOu descreva o que ajustar nas imagens ou no copy.',
+      'Responda <b>sim</b> para avancar para video.\nOu descreva o que ajustar.',
       { parse_mode: 'HTML' }
     );
   } else if (stage === 3) {
+    // Video done — show storyboard and ask about platforms
     const msg = formatStoryboardMessage(path.join(PROJECT_ROOT, outputDir));
     if (msg) {
       await ctx.reply(msg, { parse_mode: 'HTML' });
-    } else {
-      await ctx.reply(
-        '<b>Etapa 3/4 ✅ — Vídeo pronto</b>\n\n' +
-        'Responda <b>sim</b> para avançar para distribuição.\n<b>não</b> para cancelar.',
-        { parse_mode: 'HTML' }
-      );
     }
-  } else if (stage === 4) {
+
+    // Show current platform targets and ask if user wants to change
+    const currentPlatforms = cv.payload.platform_targets || [];
+    const allPlatforms = ['instagram', 'youtube', 'tiktok', 'facebook', 'threads', 'linkedin'];
+    const platformLabels = {
+      instagram: 'Instagram (carousel + stories + reels)',
+      youtube: 'YouTube (video + shorts)',
+      tiktok: 'TikTok (video curto)',
+      facebook: 'Facebook (feed + stories + reels + video)',
+      threads: 'Threads (texto + imagem)',
+      linkedin: 'LinkedIn (post profissional)',
+    };
+
+    const platformList = allPlatforms.map(p => {
+      const active = currentPlatforms.includes(p) ? '✅' : '⬜';
+      return `  ${active} <code>${p}</code> — ${platformLabels[p]}`;
+    }).join('\n');
+
     await ctx.reply(
-      '<b>Pronto para distribuição — Etapa 4/4</b>\n\n' +
-      'Tudo certo para publicar nas plataformas configuradas.\n' +
-      'Responda <b>sim</b> para iniciar a distribuição.\n<b>não</b> para cancelar.',
+      '<b>Video pronto — Etapa 3/5 ✅</b>\n\n' +
+      '<b>Plataformas selecionadas:</b>\n' +
+      platformList + '\n\n' +
+      'Responda <b>sim</b> para gerar copy para estas plataformas.\n' +
+      'Ou liste as plataformas desejadas (ex: <code>instagram,youtube,tiktok</code>).\n' +
+      '<b>nao</b> para cancelar.',
+      { parse_mode: 'HTML' }
+    );
+  } else if (stage === 4) {
+    // Platform copy done — show summaries
+    const platformsDir = path.join(PROJECT_ROOT, outputDir, 'platforms');
+    const lines = ['<b>Copy de plataforma pronto — Etapa 4/5 ✅</b>\n'];
+
+    if (fs.existsSync(platformsDir)) {
+      const mdFiles = fs.readdirSync(platformsDir).filter(f => f.endsWith('.md')).sort();
+      for (const f of mdFiles) {
+        const content = fs.readFileSync(path.join(platformsDir, f), 'utf-8');
+        const preview = content.slice(0, 400);
+        const name = f.replace('.md', '').toUpperCase();
+        lines.push(`<b>${name}:</b>`);
+        lines.push(`<i>${escapeHtml(preview)}${content.length > 400 ? '...' : ''}</i>\n`);
+      }
+    }
+
+    // Check for rework requests
+    if (fs.existsSync(platformsDir)) {
+      const jsonFiles = fs.readdirSync(platformsDir).filter(f => f.endsWith('.json'));
+      const reworks = [];
+      for (const f of jsonFiles) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(platformsDir, f), 'utf-8'));
+          if (data.rework_needed) reworks.push(`<b>${f}:</b> ${escapeHtml(data.rework_needed)}`);
+        } catch {}
+      }
+      if (reworks.length > 0) {
+        lines.push('<b>⚠️ Retrabalho solicitado:</b>');
+        reworks.forEach(r => lines.push(r));
+        lines.push('');
+      }
+    }
+
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+    await ctx.reply(
+      'Responda <b>sim</b> para avancar para distribuicao.\nOu descreva ajustes.',
+      { parse_mode: 'HTML' }
+    );
+  } else if (stage === 5) {
+    await ctx.reply(
+      '<b>Pronto para distribuicao — Etapa 5/5</b>\n\n' +
+      'Tudo certo para preparar a publicacao.\n' +
+      'Responda <b>sim</b> para gerar o Publish MD.\n<b>nao</b> para cancelar.',
       { parse_mode: 'HTML' }
     );
   }
@@ -1806,6 +1882,23 @@ async function handleV3StageApproval(ctx, chatId, s, text) {
   const isConfirm = /^(sim|ok|confirmar|confirma|aprovado|aprovar|vai|bora|yes|roda)/.test(lower);
   const isCancel  = /^(nao|não|cancela|cancelar|cancel|para|parar|no\b)/.test(lower);
   const stage = cv.pendingApproval.stage;
+
+  // Stage 3 approval: user can change platform_targets before advancing to stage 4
+  if (stage === 3) {
+    const allPlatforms = ['instagram', 'youtube', 'tiktok', 'facebook', 'threads', 'linkedin'];
+    const platformMatch = lower.match(/^([\w,]+)$/);
+    if (platformMatch && !isConfirm && !isCancel) {
+      const requested = platformMatch[1].split(',').map(p => p.trim()).filter(p => allPlatforms.includes(p));
+      if (requested.length > 0) {
+        cv.payload.platform_targets = requested;
+        await ctx.reply(
+          `Plataformas atualizadas: <b>${requested.join(', ')}</b>\nResponda <b>sim</b> para confirmar e avancar.`,
+          { parse_mode: 'HTML' }
+        );
+        return true;
+      }
+    }
+  }
 
   if (isConfirm) {
     await runStage(ctx, chatId, stage + 1);
@@ -1939,7 +2032,7 @@ bot.command('fix', async (ctx) => {
 
   const claudePath = '/home/nmaldaner/.local/bin/claude';
 
-  const prompt = `You are Claude Code working on the Times MKT social media automation project at ${PROJECT_ROOT}.
+  const prompt = `You are Claude Code working on the ITAGMKT social media automation project at ${PROJECT_ROOT}.
 
 Task: ${description}
 
@@ -2110,9 +2203,15 @@ function formatStoryboardMessage(outputDir) {
   const videoDir = path.join(outputDir, 'video');
   if (!fs.existsSync(videoDir)) return null;
 
-  const planFiles = fs.readdirSync(videoDir)
-    .filter(f => f.endsWith('_scene_plan.json'))
+  // Support both _scene_plan.json and _scene_plan_motion.json (Video Editor Agent outputs motion directly)
+  let planFiles = fs.readdirSync(videoDir)
+    .filter(f => f.endsWith('_scene_plan_motion.json'))
     .sort();
+  if (planFiles.length === 0) {
+    planFiles = fs.readdirSync(videoDir)
+      .filter(f => f.endsWith('_scene_plan.json'))
+      .sort();
+  }
 
   if (planFiles.length === 0) return null;
 
@@ -2122,20 +2221,44 @@ function formatStoryboardMessage(outputDir) {
     try {
       const plan = JSON.parse(fs.readFileSync(path.join(videoDir, file), 'utf-8'));
       const voiceLabel = { rachel: 'Rachel (emocional)', bella: 'Bella (amigável)', antoni: 'Antoni (profissional)' };
+      const sceneCount = (plan.scenes || []).length;
+      const totalDur = (plan.scenes || []).reduce((s, c) => s + (c.duration || 0), 0).toFixed(0);
+      const pacing = plan.pacing || '';
+
       lines.push(`<b>${plan.titulo || file}</b>`);
-      lines.push(`Voz: ${voiceLabel[plan.voice] || plan.voice || 'padrão'} | Duração: ~${plan.video_length || '?'}s\n`);
+      lines.push(`Voz: ${voiceLabel[plan.voice] || plan.voice || 'padrão'} | ${totalDur}s | ${sceneCount} cortes${pacing ? ` | ${pacing}` : ''}\n`);
 
       if (plan.narration_script) {
-        const preview = plan.narration_script.slice(0, 120);
-        lines.push(`<i>"${escapeHtml(preview)}${plan.narration_script.length > 120 ? '...' : ''}"</i>\n`);
+        const preview = plan.narration_script.slice(0, 150);
+        lines.push(`<i>"${escapeHtml(preview)}${plan.narration_script.length > 150 ? '...' : ''}"</i>\n`);
       }
 
-      lines.push(`<b>Cenas:</b>`);
-      (plan.scenes || []).forEach((s, i) => {
-        const imgName = s.image ? path.basename(s.image) : '(sem imagem)';
-        const crop = s.image_crop_focus ? ` crop:${s.image_crop_focus}` : '';
-        lines.push(`  ${i + 1}. [${s.type || s.id}] "<b>${escapeHtml(s.text_overlay || '')}</b>" — ${escapeHtml(imgName)}${crop} | ${s.duration}s`);
-      });
+      // For plans with many cuts (Video Editor Agent), show by sections
+      if (sceneCount > 10 && plan.sections) {
+        lines.push(`<b>Seções:</b>`);
+        for (const sec of plan.sections) {
+          const dur = sec.end_s - sec.start_s;
+          lines.push(`  ${sec.name} (${sec.start_s}-${sec.end_s}s): ${sec.cuts} cortes em ${dur}s`);
+        }
+        // Show first 3 and last 2 cuts as sample
+        const scenes = plan.scenes || [];
+        lines.push(`\n<b>Amostra de cortes:</b>`);
+        const sample = [...scenes.slice(0, 3), null, ...scenes.slice(-2)];
+        sample.forEach((s, i) => {
+          if (!s) { lines.push(`  ...`); return; }
+          const txt = s.text_overlay ? `"${escapeHtml(s.text_overlay)}"` : '(visual)';
+          const motion = s.motion?.type || '';
+          lines.push(`  #${s.cut_number || '?'}. [${s.type || s.id}] ${txt} — ${s.duration}s ${motion}`);
+        });
+      } else {
+        // Original format for small plans
+        lines.push(`<b>Cenas:</b>`);
+        (plan.scenes || []).forEach((s, i) => {
+          const imgName = s.image ? path.basename(s.image) : '(sem imagem)';
+          const crop = s.image_crop_focus ? ` crop:${s.image_crop_focus}` : '';
+          lines.push(`  ${i + 1}. [${s.type || s.id}] "<b>${escapeHtml(s.text_overlay || '')}</b>" — ${escapeHtml(imgName)}${crop} | ${s.duration}s`);
+        });
+      }
       lines.push('');
     } catch {}
   }
@@ -2250,19 +2373,19 @@ bot.command('modos', async (ctx) => {
     return;
   }
 
-  const stageMap = { '1': 'stage1', '2': 'stage2', '3': 'stage3', '4': 'stage4' };
+  const stageMap = { '1': 'stage1', '2': 'stage2', '3': 'stage3', '4': 'stage4', '5': 'stage5' };
   if (target === 'todas' || target === 'all') {
-    ['stage1','stage2','stage3','stage4'].forEach(s => { cv.approvalModes[s] = mode; });
+    ['stage1','stage2','stage3','stage4','stage5'].forEach(s => { cv.approvalModes[s] = mode; });
     await ctx.reply(`Todas as etapas definidas como <b>${mode}</b>.`, { parse_mode: 'HTML' });
   } else if (stageMap[target]) {
     cv.approvalModes[stageMap[target]] = mode;
-    const stageLabels = { stage1: 'Brief', stage2: 'Criativos', stage3: 'Vídeo', stage4: 'Distribuição' };
+    const stageLabels = { stage1: 'Brief & Narrativa', stage2: 'Imagens', stage3: 'Video', stage4: 'Copy Plataforma', stage5: 'Distribuicao' };
     await ctx.reply(
       `Etapa ${target} (${stageLabels[stageMap[target]]}) definida como <b>${mode}</b>.`,
       { parse_mode: 'HTML' }
     );
   } else {
-    await ctx.reply('Etapa inválida. Use 1, 2, 3, 4 ou todas.');
+    await ctx.reply('Etapa invalida. Use 1, 2, 3, 4, 5 ou todas.');
   }
 });
 

@@ -1,12 +1,12 @@
 ## Project Overview
 
-**ATMKT v3.3.1** — AI-powered Social Media Content Automation System built with Claude Code inside the Antigravity IDE.
+**ITAGMKT v4.0.0** — INEMA Time de Agentes de Marketing. AI-powered Social Media Content Automation System built with Claude Code inside the Antigravity IDE.
 
 ---
 
 ## Versionamento
 
-**Padrão:** `ATMKT vMAJOR.RECURSO.BUG`
+**Padrão:** `ITAGMKT vMAJOR.RECURSO.BUG`
 
 | Campo | Quando incrementar |
 |---|---|
@@ -21,9 +21,9 @@
 - `v3.1.0` → adição do Agente Revisor automático (RECURSO+1, BUG não zera → mantém 0)
 - `v3.1.1` → fix no gate de imagens (BUG+1)
 - `v3.2.1` → Motion Director + brand visual context (RECURSO+1, BUG acumulado = 1, não zerou)
-- `v4.0.0` → mudança de arquitetura (MAJOR+1, tudo zera)
+- `v4.0.0` → pipeline 5 estágios, 6 agentes de plataforma, video quick/pro, publish genérico (MAJOR+1, tudo zera)
 
-**Versão atual:** `ATMKT v3.3.1`
+**Versão atual:** `ITAGMKT v4.0.0`
 
 Sempre atualizar a versão no topo deste arquivo e no `package.json` ao fazer uma alteração relevante.
 

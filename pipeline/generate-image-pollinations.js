@@ -72,11 +72,7 @@ function downloadBinary(url, outputPath) {
     const protocol = url.startsWith('https') ? https : http;
 
     const doGet = (targetUrl) => {
-      const headers = POLLINATIONS_TOKEN
-        ? { Authorization: `Bearer ${POLLINATIONS_TOKEN}` }
-        : {};
-
-      protocol.get(targetUrl, { headers }, (res) => {
+      protocol.get(targetUrl, (res) => {
         if (res.statusCode === 301 || res.statusCode === 302) {
           file.close();
           return downloadBinary(res.headers.location, outputPath).then(resolve).catch(reject);
@@ -110,6 +106,7 @@ async function generateImage(outputPath, prompt, model = DEFAULT_MODEL, aspectRa
     enhance: 'false',
     private: 'false',
   });
+  if (POLLINATIONS_TOKEN) params.set('key', POLLINATIONS_TOKEN);
 
   const encodedPrompt = encodeURIComponent(prompt);
   const url = `${BASE_URL}/prompt/${encodedPrompt}?${params.toString()}`;

@@ -1,6 +1,17 @@
+#!/usr/bin/env node
+
 /**
- * publish_now.js
- * Executes Instagram and YouTube publishing for test_job_payload_1_20260315.
+ * publish_now.js — Generic campaign publisher
+ *
+ * Reads platforms/*.json and media_urls.json from a campaign output directory,
+ * detects which platforms have API credentials in .env, and publishes.
+ *
+ * Usage:
+ *   node pipeline/publish_now.js <output_dir> [--dry-run]
+ *
+ * Example:
+ *   node pipeline/publish_now.js prj/inema/outputs/pascoa_2026-04-20
+ *   node pipeline/publish_now.js prj/inema/outputs/pascoa_2026-04-20 --dry-run
  */
 
 const fs = require('fs');
@@ -8,44 +19,51 @@ const https = require('https');
 const http = require('http');
 const path = require('path');
 
-// ── Credentials ────────────────────────────────────────────────────────────────
-const envData = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf-8');
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+
+// ── Read .env ────────────────────────────────────────────────────────────────
+const envPath = path.resolve(__dirname, '../.env');
+const envData = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
 const getEnv = (key) => {
   const match = envData.match(new RegExp(`^${key}=(.*)`, 'm'));
   return match ? match[1].trim() : null;
 };
 
-const IG_ACCOUNT_ID      = getEnv('INSTAGRAM_ACCOUNT_ID');
-const IG_ACCESS_TOKEN    = getEnv('INSTAGRAM_ACCESS_TOKEN');
-const THREADS_USER_ID      = getEnv('THREADS_USER_ID');
-const THREADS_ACCESS_TOKEN = getEnv('THREADS_ACCESS_TOKEN');
-const YT_CLIENT_ID       = getEnv('YOUTUBE_CLIENT_ID');
-const YT_CLIENT_SECRET   = getEnv('YOUTUBE_CLIENT_SECRET');
-const YT_REFRESH_TOKEN   = getEnv('YOUTUBE_REFRESH_TOKEN');
+// ── Platform credentials ─────────────────────────────────────────────────────
+const CREDENTIALS = {
+  instagram: {
+    accountId: getEnv('INSTAGRAM_ACCOUNT_ID'),
+    accessToken: getEnv('INSTAGRAM_ACCESS_TOKEN'),
+    get configured() { return !!(this.accountId && this.accessToken); },
+  },
+  youtube: {
+    clientId: getEnv('YOUTUBE_CLIENT_ID'),
+    clientSecret: getEnv('YOUTUBE_CLIENT_SECRET'),
+    refreshToken: getEnv('YOUTUBE_REFRESH_TOKEN'),
+    get configured() { return !!(this.clientId && this.clientSecret && this.refreshToken); },
+  },
+  threads: {
+    userId: getEnv('THREADS_USER_ID'),
+    accessToken: getEnv('THREADS_ACCESS_TOKEN'),
+    get configured() { return !!(this.userId && this.accessToken); },
+  },
+  facebook: {
+    pageId: getEnv('FACEBOOK_PAGE_ID'),
+    accessToken: getEnv('FACEBOOK_ACCESS_TOKEN'),
+    get configured() { return !!(this.pageId && this.accessToken); },
+  },
+  tiktok: {
+    accessToken: getEnv('TIKTOK_ACCESS_TOKEN'),
+    get configured() { return !!this.accessToken; },
+  },
+  linkedin: {
+    accessToken: getEnv('LINKEDIN_ACCESS_TOKEN'),
+    organizationId: getEnv('LINKEDIN_ORGANIZATION_ID'),
+    get configured() { return !!(this.accessToken); },
+  },
+};
 
-// ── Campaign data ──────────────────────────────────────────────────────────────
-const CAMPAIGN_DIR = path.join(__dirname, '..', 'outputs', 'test_job_payload_1_20260315');
-const PUBLISH_MD   = path.join(CAMPAIGN_DIR, 'Publish test_job_payload_1 2026-03-15.md');
-
-const IG_IMAGE_URL = 'https://zpthrcqdcmueifnqyvgh.supabase.co/storage/v1/object/public/campaign-uploads/test_job_payload_1_20260315_instagram_ad_1773564616525.png';
-const IG_CAPTION   = `Still dragging this morning? ☕
-
-Cold brew delivers smooth energy without the bitterness or the crash — grab-and-go, no brewing required.
-
-Upgrade Your Morning →
-
-#ColdBrewCoffeeCo #ColdBrew #MorningFuel #BrewedDifferent #CoffeeCulture`;
-
-const THREADS_POST = `Hot coffee in the morning is fine. Cold brew in the morning is a different kind of morning entirely.
-
-No bitterness. No waiting. Just smooth energy from the first sip. ☕`;
-
-const YT_VIDEO_PATH = path.join(CAMPAIGN_DIR, 'video', 'video_ad.mp4');
-const YT_TITLE       = 'Upgrade Your Morning with Cold Brew Coffee | Cold Brew Coffee Co.';
-const YT_DESCRIPTION = 'Discover why cold brew is becoming the go-to morning choice for busy professionals — smooth taste, zero bitterness, and clean energy with no crash. Ready-to-drink, no brewing required. Shop now at [link].';
-const YT_TAGS        = ['cold brew coffee','morning routine','smooth coffee','ready to drink coffee','cold brew energy','no bitterness coffee','coffee for professionals','cold brew at home'];
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── HTTP helpers ─────────────────────────────────────────────────────────────
 function fetchJson(url, options = {}) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
@@ -74,225 +92,365 @@ function postJson(url, payload, headers = {}) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-function updatePublishMd(platform, mediaId) {
-  let md = fs.readFileSync(PUBLISH_MD, 'utf-8');
-  md = md.replace(
-    `- [ ] ${platform} — Ready to publish`,
-    `- [x] ${platform} — Published (ID: ${mediaId})`
-  );
-  md = md.replace(
-    '- [ ] Posts published (pending user approval — reference this file to trigger)',
-    '- [x] Posts published'
-  );
-  fs.writeFileSync(PUBLISH_MD, md);
-}
+// ── Instagram publisher ──────────────────────────────────────────────────────
+async function publishInstagram(platformData, mediaUrls) {
+  const creds = CREDENTIALS.instagram;
+  const results = [];
 
-// ── Instagram ──────────────────────────────────────────────────────────────────
-async function publishInstagram() {
-  console.log('\n── Instagram ──────────────────────────────────────────────');
+  // Carousel post
+  if (platformData.carousel) {
+    const caption = platformData.carousel.caption || '';
+    // Find first image URL from media_urls
+    const imageUrl = Object.values(mediaUrls).find(url => /\.(png|jpg|jpeg)$/i.test(url));
+    if (!imageUrl) { console.log('  No image URL found for Instagram'); return results; }
 
-  // 1. Create container
-  console.log('Creating media container…');
-  const containerRes = await postJson(
-    `https://graph.facebook.com/v25.0/${IG_ACCOUNT_ID}/media`,
-    { image_url: IG_IMAGE_URL, caption: IG_CAPTION },
-    { Authorization: `Bearer ${IG_ACCESS_TOKEN}` }
-  );
-
-  if (!containerRes.body.id) {
-    console.error('Container creation failed:', JSON.stringify(containerRes.body, null, 2));
-    return null;
-  }
-
-  const containerId = containerRes.body.id;
-  console.log(`Container created: ${containerId}`);
-
-  // 2. Poll for FINISHED status
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    console.log(`Checking container status (attempt ${attempt}/5)…`);
-    const statusRes = await fetchJson(
-      `https://graph.facebook.com/v25.0/${containerId}?fields=status_code&access_token=${IG_ACCESS_TOKEN}`
+    console.log('  Creating Instagram container...');
+    const containerRes = await postJson(
+      `https://graph.facebook.com/v25.0/${creds.accountId}/media`,
+      { image_url: imageUrl, caption },
+      { Authorization: `Bearer ${creds.accessToken}` }
     );
-    const status = statusRes.body.status_code;
-    console.log(`  Status: ${status}`);
-    if (status === 'FINISHED') break;
-    if (status === 'ERROR') {
-      console.error('Container status ERROR — aborting Instagram publish.');
-      return null;
+
+    if (!containerRes.body.id) {
+      console.error('  Container failed:', JSON.stringify(containerRes.body));
+      results.push({ type: 'carousel', status: 'failed', error: containerRes.body });
+      return results;
     }
-    if (attempt === 5) {
-      console.error('Container never reached FINISHED after 5 attempts.');
-      return null;
+
+    const containerId = containerRes.body.id;
+    console.log(`  Container: ${containerId}`);
+
+    // Poll for FINISHED
+    for (let i = 1; i <= 5; i++) {
+      const statusRes = await fetchJson(
+        `https://graph.facebook.com/v25.0/${containerId}?fields=status_code&access_token=${creds.accessToken}`
+      );
+      if (statusRes.body.status_code === 'FINISHED') break;
+      if (statusRes.body.status_code === 'ERROR' || i === 5) {
+        results.push({ type: 'carousel', status: 'failed', error: 'Container never reached FINISHED' });
+        return results;
+      }
+      await sleep(60000);
     }
-    await sleep(60000);
+
+    // Publish
+    const publishRes = await postJson(
+      `https://graph.facebook.com/v25.0/${creds.accountId}/media_publish`,
+      { creation_id: containerId },
+      { Authorization: `Bearer ${creds.accessToken}` }
+    );
+
+    if (publishRes.body.id) {
+      console.log(`  Published! Media ID: ${publishRes.body.id}`);
+      results.push({ type: 'carousel', status: 'published', mediaId: publishRes.body.id });
+    } else {
+      results.push({ type: 'carousel', status: 'failed', error: publishRes.body });
+    }
   }
 
-  // 3. Publish container
-  console.log('Publishing container…');
-  const publishRes = await postJson(
-    `https://graph.facebook.com/v25.0/${IG_ACCOUNT_ID}/media_publish`,
-    { creation_id: containerId },
-    { Authorization: `Bearer ${IG_ACCESS_TOKEN}` }
-  );
-
-  if (!publishRes.body.id) {
-    console.error('Publish failed:', JSON.stringify(publishRes.body, null, 2));
-    return null;
-  }
-
-  const mediaId = publishRes.body.id;
-  console.log(`✓ Instagram post published! Media ID: ${mediaId}`);
-  return mediaId;
+  return results;
 }
 
-// ── Threads ────────────────────────────────────────────────────────────────────
-async function publishThreads() {
-  console.log('\n── Threads ─────────────────────────────────────────────────');
+// ── Threads publisher ────────────────────────────────────────────────────────
+async function publishThreads(platformData, mediaUrls) {
+  const creds = CREDENTIALS.threads;
+  const results = [];
 
-  // 1. Create container
-  console.log('Creating Threads container…');
+  const posts = platformData.posts || [];
+  const mainPost = posts.find(p => p.type === 'main');
+  if (!mainPost) { console.log('  No main post found'); return results; }
+
+  // Create container
+  const containerPayload = { media_type: 'TEXT', text: mainPost.text, access_token: creds.accessToken };
+
+  // If post has image, attach it
+  if (mainPost.image && mainPost.has_image !== false) {
+    const imageUrl = Object.values(mediaUrls).find(url => url.includes(mainPost.image));
+    if (imageUrl) {
+      containerPayload.media_type = 'IMAGE';
+      containerPayload.image_url = imageUrl;
+    }
+  }
+
+  console.log('  Creating Threads container...');
   const containerRes = await postJson(
-    `https://graph.threads.net/v1.0/${THREADS_USER_ID}/threads`,
-    { media_type: 'TEXT', text: THREADS_POST, access_token: THREADS_ACCESS_TOKEN }
+    `https://graph.threads.net/v1.0/${creds.userId}/threads`,
+    containerPayload
   );
 
   if (!containerRes.body.id) {
-    console.error('Container creation failed:', JSON.stringify(containerRes.body, null, 2));
-    return null;
+    results.push({ type: 'main', status: 'failed', error: containerRes.body });
+    return results;
   }
 
-  const containerId = containerRes.body.id;
-  console.log(`Container created: ${containerId}`);
-
-  // 2. Publish container
-  console.log('Publishing container…');
+  // Publish
   const publishRes = await postJson(
-    `https://graph.threads.net/v1.0/${THREADS_USER_ID}/threads_publish`,
-    { creation_id: containerId, access_token: THREADS_ACCESS_TOKEN }
+    `https://graph.threads.net/v1.0/${creds.userId}/threads_publish`,
+    { creation_id: containerRes.body.id, access_token: creds.accessToken }
   );
 
-  if (!publishRes.body.id) {
-    console.error('Publish failed:', JSON.stringify(publishRes.body, null, 2));
-    return null;
+  if (publishRes.body.id) {
+    console.log(`  Published! Post ID: ${publishRes.body.id}`);
+    results.push({ type: 'main', status: 'published', postId: publishRes.body.id });
+  } else {
+    results.push({ type: 'main', status: 'failed', error: publishRes.body });
   }
 
-  const postId = publishRes.body.id;
-  console.log(`✓ Threads post published! Post ID: ${postId}`);
-  return postId;
+  return results;
 }
 
-// ── YouTube ────────────────────────────────────────────────────────────────────
-async function getYouTubeAccessToken() {
-  console.log('Refreshing YouTube access token…');
-  const res = await postJson('https://oauth2.googleapis.com/token', {
-    client_id:     YT_CLIENT_ID,
-    client_secret: YT_CLIENT_SECRET,
-    refresh_token: YT_REFRESH_TOKEN,
-    grant_type:    'refresh_token',
+// ── YouTube publisher ────────────────────────────────────────────────────────
+async function publishYouTube(platformData, mediaUrls, outputDir) {
+  const creds = CREDENTIALS.youtube;
+  const results = [];
+
+  const videos = platformData.videos || [];
+  if (videos.length === 0) { console.log('  No videos in youtube.json'); return results; }
+
+  // Refresh access token
+  console.log('  Refreshing YouTube token...');
+  const tokenRes = await postJson('https://oauth2.googleapis.com/token', {
+    client_id: creds.clientId,
+    client_secret: creds.clientSecret,
+    refresh_token: creds.refreshToken,
+    grant_type: 'refresh_token',
   });
 
-  if (!res.body.access_token) {
-    throw new Error(`Token refresh failed: ${JSON.stringify(res.body)}`);
+  if (!tokenRes.body.access_token) {
+    results.push({ type: 'video', status: 'failed', error: 'Token refresh failed' });
+    return results;
   }
-  console.log('Access token obtained.');
-  return res.body.access_token;
-}
+  const accessToken = tokenRes.body.access_token;
 
-function uploadVideoMultipart(accessToken, videoPath) {
-  return new Promise((resolve, reject) => {
-    const videoBuffer = fs.readFileSync(videoPath);
+  for (const video of videos) {
+    // Find video file
+    const videoFile = video.file || '';
+    const videoDir = path.resolve(PROJECT_ROOT, outputDir, 'video');
+    let videoPath = null;
+
+    if (fs.existsSync(videoDir)) {
+      const candidates = fs.readdirSync(videoDir).filter(f => f.includes(videoFile) && f.endsWith('.mp4'));
+      if (candidates.length > 0) videoPath = path.join(videoDir, candidates[0]);
+    }
+
+    if (!videoPath || !fs.existsSync(videoPath)) {
+      console.log(`  Video file not found: ${videoFile}`);
+      results.push({ type: 'video', file: videoFile, status: 'failed', error: 'File not found' });
+      continue;
+    }
+
+    console.log(`  Uploading ${path.basename(videoPath)} (${(fs.statSync(videoPath).size / 1024 / 1024).toFixed(1)} MB)...`);
+
     const metadata = JSON.stringify({
       snippet: {
-        title:       YT_TITLE,
-        description: YT_DESCRIPTION,
-        tags:        YT_TAGS,
-        categoryId:  '22', // People & Blogs
+        title: video.title || '',
+        description: video.description || '',
+        tags: video.tags || [],
+        categoryId: '22',
       },
       status: { privacyStatus: 'public' },
     });
 
     const BOUNDARY = '----FormBoundary' + Date.now();
-    const metaPart = [
-      `--${BOUNDARY}`,
-      'Content-Type: application/json; charset=UTF-8',
-      '',
-      metadata,
-      '',
-    ].join('\r\n');
-    const videoPart = `--${BOUNDARY}\r\nContent-Type: video/mp4\r\n\r\n`;
-    const closing = `\r\n--${BOUNDARY}--\r\n`;
+    const videoBuffer = fs.readFileSync(videoPath);
+    const metaPart = Buffer.from(`--${BOUNDARY}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`, 'utf-8');
+    const videoPart = Buffer.from(`--${BOUNDARY}\r\nContent-Type: video/mp4\r\n\r\n`, 'utf-8');
+    const closing = Buffer.from(`\r\n--${BOUNDARY}--\r\n`, 'utf-8');
+    const body = Buffer.concat([metaPart, videoPart, videoBuffer, closing]);
 
-    const metaBuffer  = Buffer.from(metaPart, 'utf-8');
-    const videoHeader = Buffer.from(videoPart, 'utf-8');
-    const closeBuffer = Buffer.from(closing, 'utf-8');
-    const body = Buffer.concat([metaBuffer, videoHeader, videoBuffer, closeBuffer]);
-
-    const options = {
-      method: 'POST',
-      hostname: 'www.googleapis.com',
-      path: '/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status',
-      headers: {
-        Authorization:  `Bearer ${accessToken}`,
-        'Content-Type': `multipart/related; boundary=${BOUNDARY}`,
-        'Content-Length': body.length,
-      },
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (c) => (data += c));
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, body: data }); }
+    const uploadRes = await new Promise((resolve, reject) => {
+      const req = https.request({
+        method: 'POST',
+        hostname: 'www.googleapis.com',
+        path: '/upload/youtube/v3/videos?uploadType=multipart&part=snippet,status',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': `multipart/related; boundary=${BOUNDARY}`,
+          'Content-Length': body.length,
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+          catch { resolve({ status: res.statusCode, body: data }); }
+        });
       });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
     });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
+
+    if (uploadRes.status === 200 && uploadRes.body.id) {
+      console.log(`  Published! https://youtube.com/watch?v=${uploadRes.body.id}`);
+      results.push({ type: 'video', file: videoFile, status: 'published', videoId: uploadRes.body.id });
+    } else {
+      results.push({ type: 'video', file: videoFile, status: 'failed', error: uploadRes.body });
+    }
+  }
+
+  return results;
+}
+
+// ── Facebook publisher (placeholder) ─────────────────────────────────────────
+async function publishFacebook(platformData, mediaUrls) {
+  // Facebook Graph API uses same SDK as Instagram
+  // TODO: implement when FACEBOOK_PAGE_ID + FACEBOOK_ACCESS_TOKEN are available
+  return [{ type: 'feed', status: 'manual', note: 'Facebook publishing not yet implemented' }];
+}
+
+// ── TikTok publisher (placeholder) ───────────────────────────────────────────
+async function publishTikTok(platformData, mediaUrls) {
+  // TikTok Content Posting API requires approved app
+  // TODO: implement when TIKTOK_ACCESS_TOKEN is available
+  return [{ type: 'video', status: 'manual', note: 'TikTok publishing not yet implemented' }];
+}
+
+// ── LinkedIn publisher (placeholder) ─────────────────────────────────────────
+async function publishLinkedIn(platformData, mediaUrls) {
+  // LinkedIn Marketing API requires approved app
+  // TODO: implement when LINKEDIN_ACCESS_TOKEN is available
+  return [{ type: 'post', status: 'manual', note: 'LinkedIn publishing not yet implemented' }];
+}
+
+// ── Publisher registry ───────────────────────────────────────────────────────
+const PUBLISHERS = {
+  instagram: publishInstagram,
+  youtube: publishYouTube,
+  threads: publishThreads,
+  facebook: publishFacebook,
+  tiktok: publishTikTok,
+  linkedin: publishLinkedIn,
+};
+
+// ── Publish MD updater ───────────────────────────────────────────────────────
+function updatePublishMd(publishMdPath, platform, results) {
+  if (!fs.existsSync(publishMdPath)) return;
+  let md = fs.readFileSync(publishMdPath, 'utf-8');
+
+  for (const r of results) {
+    const label = platform.charAt(0).toUpperCase() + platform.slice(1);
+    if (r.status === 'published') {
+      const id = r.mediaId || r.postId || r.videoId || '';
+      md = md.replace(
+        new RegExp(`- \\[ \\] ${label}.*`),
+        `- [x] ${label} — Published (ID: ${id})`
+      );
+    } else if (r.status === 'manual') {
+      md = md.replace(
+        new RegExp(`- \\[ \\] ${label}.*`),
+        `- [~] ${label} — Manual (${r.note || 'no API configured'})`
+      );
+    } else if (r.status === 'failed') {
+      md = md.replace(
+        new RegExp(`- \\[ \\] ${label}.*`),
+        `- [!] ${label} — Failed (${typeof r.error === 'string' ? r.error : JSON.stringify(r.error).slice(0, 100)})`
+      );
+    }
+  }
+
+  fs.writeFileSync(publishMdPath, md);
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+async function publish(outputDir, dryRun = false) {
+  const absOutputDir = path.resolve(PROJECT_ROOT, outputDir);
+
+  // 1. Load media_urls.json
+  const mediaUrlsPath = path.join(absOutputDir, 'media_urls.json');
+  const mediaUrls = fs.existsSync(mediaUrlsPath)
+    ? JSON.parse(fs.readFileSync(mediaUrlsPath, 'utf-8'))
+    : {};
+
+  // 2. Discover platform JSONs
+  const platformsDir = path.join(absOutputDir, 'platforms');
+  if (!fs.existsSync(platformsDir)) {
+    console.error('No platforms/ directory found in', outputDir);
+    process.exit(1);
+  }
+
+  const platformFiles = fs.readdirSync(platformsDir).filter(f => f.endsWith('.json'));
+  console.log(`\nFound ${platformFiles.length} platform(s): ${platformFiles.map(f => f.replace('.json', '')).join(', ')}`);
+
+  // 3. Detect configured APIs
+  console.log('\nAPI Status:');
+  for (const [name, creds] of Object.entries(CREDENTIALS)) {
+    console.log(`  ${creds.configured ? '✓' : '✗'} ${name}`);
+  }
+
+  // 4. Find Publish MD
+  const publishMdFiles = fs.readdirSync(absOutputDir).filter(f => f.startsWith('Publish') && f.endsWith('.md'));
+  const publishMdPath = publishMdFiles.length > 0 ? path.join(absOutputDir, publishMdFiles[0]) : null;
+
+  // 5. Publish each platform
+  const summary = {};
+
+  for (const file of platformFiles) {
+    const platform = file.replace('.json', '');
+    const data = JSON.parse(fs.readFileSync(path.join(platformsDir, file), 'utf-8'));
+    const publisher = PUBLISHERS[platform];
+    const creds = CREDENTIALS[platform];
+
+    console.log(`\n── ${platform.toUpperCase()} ──`);
+
+    if (!publisher) {
+      console.log(`  No publisher for ${platform} — skipping`);
+      summary[platform] = [{ status: 'manual', note: 'No publisher available' }];
+      continue;
+    }
+
+    if (!creds || !creds.configured) {
+      console.log(`  No API credentials — content available for manual posting`);
+      summary[platform] = [{ status: 'manual', note: 'No API credentials in .env' }];
+      if (publishMdPath) updatePublishMd(publishMdPath, platform, summary[platform]);
+      continue;
+    }
+
+    if (dryRun) {
+      console.log(`  [DRY RUN] Would publish to ${platform}`);
+      summary[platform] = [{ status: 'dry-run' }];
+      continue;
+    }
+
+    try {
+      const results = await publisher(data, mediaUrls, outputDir);
+      summary[platform] = results;
+      if (publishMdPath) updatePublishMd(publishMdPath, platform, results);
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      summary[platform] = [{ status: 'failed', error: err.message }];
+      if (publishMdPath) updatePublishMd(publishMdPath, platform, summary[platform]);
+    }
+  }
+
+  // 6. Summary
+  console.log('\n── SUMMARY ──');
+  for (const [platform, results] of Object.entries(summary)) {
+    const status = results.map(r => r.status).join(', ');
+    const ids = results.filter(r => r.mediaId || r.postId || r.videoId)
+      .map(r => r.mediaId || r.postId || r.videoId).join(', ');
+    console.log(`  ${platform}: ${status}${ids ? ` (${ids})` : ''}`);
+  }
+
+  return summary;
+}
+
+// ── CLI ──────────────────────────────────────────────────────────────────────
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const outputDir = args.find(a => !a.startsWith('--'));
+  const dryRun = args.includes('--dry-run');
+
+  if (!outputDir) {
+    console.error('Usage: node pipeline/publish_now.js <output_dir> [--dry-run]');
+    process.exit(1);
+  }
+
+  publish(outputDir, dryRun).catch(err => {
+    console.error('Fatal:', err);
+    process.exit(1);
   });
+} else {
+  // Module mode — used by bot.js or Distribution Agent
+  module.exports = { publish, CREDENTIALS };
 }
-
-async function publishYouTube() {
-  console.log('\n── YouTube ─────────────────────────────────────────────────');
-
-  if (!fs.existsSync(YT_VIDEO_PATH)) {
-    console.error(`Video file not found at ${YT_VIDEO_PATH}`);
-    return null;
-  }
-
-  const accessToken = await getYouTubeAccessToken();
-
-  console.log(`Uploading video (${(fs.statSync(YT_VIDEO_PATH).size / 1024 / 1024).toFixed(1)} MB)…`);
-  const res = await uploadVideoMultipart(accessToken, YT_VIDEO_PATH);
-
-  if (res.status !== 200 || !res.body.id) {
-    console.error('YouTube upload failed:', JSON.stringify(res.body, null, 2));
-    return null;
-  }
-
-  const videoId = res.body.id;
-  console.log(`✓ YouTube video uploaded! Video ID: ${videoId}`);
-  console.log(`  URL: https://www.youtube.com/watch?v=${videoId}`);
-  return videoId;
-}
-
-// ── Main ───────────────────────────────────────────────────────────────────────
-(async () => {
-  console.log('=== Publishing: test_job_payload_1 (2026-03-15) ===');
-
-  const igId     = await publishInstagram();
-  const threadsId = await publishThreads();
-  const ytId     = await publishYouTube();
-
-  // Update Publish MD
-  if (igId)      updatePublishMd('Instagram', igId);
-  if (threadsId) updatePublishMd('Threads', threadsId);
-  if (ytId)      updatePublishMd('YouTube', ytId);
-
-  console.log('\n=== Summary ===');
-  console.log(`Instagram : ${igId      ? `✓ ${igId}`                                      : '✗ Failed'}`);
-  console.log(`Threads   : ${threadsId ? `✓ ${threadsId}`                                  : '✗ Failed'}`);
-  console.log(`YouTube   : ${ytId      ? `✓ https://www.youtube.com/watch?v=${ytId}`       : '✗ Failed'}`);
-
-  if (!igId || !threadsId || !ytId) process.exit(1);
-})();

@@ -20,28 +20,44 @@ Generates programmatic static ad creative layouts for Cold Brew Coffee Co. as st
 - User says "make an Instagram ad", "design a square ad", "create a story creative"
 - User needs layout JSON for a frontend renderer to produce a final image
 
-## CRITICAL: Before Generating — Read Knowledge Files
+## Role
+
+You are a VISUAL DESIGNER. Your job is to design and render ad images. You do NOT write copy — all text comes from the Copywriter Agent and the Creative Brief.
+
+---
+
+## CRITICAL: Before Generating — Read ALL Inputs
 
 Always reference these files before producing any output:
 
-- `<project_dir>/knowledge/brand_identity.md` — tone, brand voice, CTA style, color palette, typography
-- `<project_dir>/knowledge/product_campaign.md` — product features, selling points, visual asset references
+### Strategic inputs
+- `<output_dir>/creative/creative_brief.json` — **PRIMARY**: campaign angle, emotional hook, visual direction (mood, colors, photography style), approved CTAs, guardrails. All visual decisions MUST align with this brief.
+
+### Copy inputs (from Copywriter Agent — do NOT invent your own)
+- `<output_dir>/copy/carousel_captions.json` — one caption per carousel slide (use as headline/subtext per slide)
+- `<output_dir>/copy/story_captions.json` — one caption per story slide
+- `<output_dir>/copy/copy_output.json` — structured copy with campaign angle, key messages, CTAs
+
+### Brand inputs
+- `<project_dir>/knowledge/brand_identity.md` — color palette, typography, tone
+- `<project_dir>/knowledge/product_campaign.md` — product features, visual asset references
 - `<project_dir>/knowledge/platform_guidelines.md` — format specs for Instagram, Stories, YouTube
 
-These files govern headline tone, CTA language, image asset names, and layout constraints.
+**Copy rule:** Use ONLY the text from the Copywriter outputs. CTAs come from `creative_brief.json` → `approved_ctas`. If copy files are missing, fall back to `key_messages` from the creative brief. Never invent headlines, subtext, or CTAs.
 
 ---
 
 ## Step 1: Gather Inputs
 
-Collect or confirm the following before proceeding:
+Confirm the following before proceeding:
 
-| Input | Example |
+| Input | Source |
 |---|---|
-| Product | Cold Brew Coffee |
-| Campaign Goal | Brand awareness / conversions |
-| Target Platform | Instagram / Stories / YouTube |
-| Image Assets Available | lifestyle_morning.png, coffee_can.png |
+| Campaign angle & mood | `creative_brief.json` |
+| Copy per slide | `carousel_captions.json` / `story_captions.json` |
+| CTAs | `creative_brief.json` → `approved_ctas` |
+| Target Platform | Payload / defaults |
+| Image Assets | Brand images, API, free stock, or user folder |
 | Preferred Layout Type | Product Focus / Split / Lifestyle |
 
 If platform or layout type is missing, apply defaults (see Step 2). Note any assumptions in output.
@@ -83,17 +99,18 @@ Best for: brand awareness, emotional connection
 
 ---
 
-## Step 3: Generate Marketing Copy
+## Step 3: Apply Copy to Layout
 
-Produce copy for all three text elements:
+Read the copy files from `<output_dir>/copy/`:
+- For carousel: use each entry in `carousel_captions.json` as the text for that slide
+- For stories: use each entry in `story_captions.json`
+- Extract the headline (first line or bold phrase) and subtext (rest) from each caption
+- CTA text: use `approved_ctas` from `creative_brief.json`
 
-**Headline** — 4 words or fewer. Bold claim or hook. Pull from brand voice in `brand_identity.md`.
-
-**Subtext** — 1 short sentence. Reinforce the headline. Mention a key product benefit from `product_campaign.md`.
-
-**CTA** — 2–3 words. Action verb first. Examples: "Shop Now", "Try It Free", "Upgrade Your Morning".
-
-Apply brand voice: confident, clean, energizing. Never corporate or generic.
+**Text rules for images:**
+- Headline: 4 words or fewer (extract from caption)
+- Subtext: 1 short sentence (extract from caption)
+- CTA: 2-3 words from approved CTAs only
 
 ---
 

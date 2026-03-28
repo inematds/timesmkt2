@@ -24,10 +24,93 @@ const pollinationsProvider = require('./generate-image-pollinations');
 // Active provider — default KIE, switch to pollinations via IMAGE_PROVIDER env or job.data.image_provider
 const IMAGE_PROVIDER = (process.env.IMAGE_PROVIDER || 'kie').toLowerCase();
 
+// Free image provider — default pexels, configurable via FREE_IMAGE_PROVIDER env
+const FREE_IMAGE_PROVIDER = (process.env.FREE_IMAGE_PROVIDER || 'pexels').toLowerCase();
+
 function getImageProvider(jobProvider) {
   const p = (jobProvider || IMAGE_PROVIDER || 'kie').toLowerCase();
   if (p === 'pollinations') return pollinationsProvider;
   return kieProvider;
+}
+
+/**
+ * Normalizes image_source aliases:
+ *   marca → brand, pasta → folder, gratis → free
+ * Returns { source, folder } where folder is only set for 'folder' source.
+ */
+function resolveImageSource(imageSource, imageFolder) {
+  const aliases = { marca: 'brand', pasta: 'folder', gratis: 'free' };
+  const source = aliases[imageSource] || imageSource || 'brand';
+  return { source, folder: source === 'folder' ? imageFolder : null };
+}
+
+/**
+ * Returns the API key and provider name for free image sources.
+ * Checks FREE_IMAGE_PROVIDER env, falls back to whatever key is available.
+ */
+function getFreeImageProvider() {
+  const preferred = FREE_IMAGE_PROVIDER;
+  const providers = {
+    pexels:   { key: process.env.PEXELS_API_KEY,       name: 'Pexels',   searchUrl: 'https://api.pexels.com/v1/search', authHeader: 'Authorization' },
+    unsplash: { key: process.env.UNSPLASH_ACCESS_KEY,   name: 'Unsplash', searchUrl: 'https://api.unsplash.com/search/photos', authHeader: 'Authorization' },
+    pixabay:  { key: process.env.PIXABAY_API_KEY,       name: 'Pixabay',  searchUrl: 'https://pixabay.com/api/', authHeader: null },
+  };
+
+  // Try preferred first
+  if (providers[preferred] && providers[preferred].key) return { ...providers[preferred], id: preferred };
+
+  // Fallback: first available key
+  for (const [id, p] of Object.entries(providers)) {
+    if (p.key) return { ...p, id };
+  }
+
+  return null; // No free provider configured
+}
+
+/**
+ * Loads assets from a user-specified folder path.
+ * Supports absolute paths and paths relative to PROJECT_ROOT.
+ */
+function getFolderAssets(folderPath) {
+  const absPath = path.isAbsolute(folderPath) ? folderPath : path.resolve(PROJECT_ROOT, folderPath);
+  if (!fs.existsSync(absPath)) return [];
+
+  const imageExts = ['.jpg', '.jpeg', '.png', '.webp'];
+  const videoExts = ['.mp4', '.mov', '.webm', '.avi'];
+  const files = [];
+
+  const entries = fs.readdirSync(absPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      // One level of recursion
+      const subEntries = fs.readdirSync(path.join(absPath, entry.name), { withFileTypes: true });
+      for (const sub of subEntries) {
+        if (sub.isFile()) {
+          const ext = path.extname(sub.name).toLowerCase();
+          const fullPath = path.join(absPath, entry.name, sub.name);
+          if (imageExts.includes(ext)) {
+            const dims = getImageDimensions(fullPath);
+            files.push({ path: fullPath, imageType: detectImageType(fullPath, dims), ...dims });
+          } else if (videoExts.includes(ext)) {
+            const dims = getImageDimensions(fullPath);
+            files.push({ path: fullPath, imageType: 'clip', ...dims });
+          }
+        }
+      }
+    } else {
+      const ext = path.extname(entry.name).toLowerCase();
+      const fullPath = path.join(absPath, entry.name);
+      if (imageExts.includes(ext)) {
+        const dims = getImageDimensions(fullPath);
+        files.push({ path: fullPath, imageType: detectImageType(fullPath, dims), ...dims });
+      } else if (videoExts.includes(ext)) {
+        const dims = getImageDimensions(fullPath);
+        files.push({ path: fullPath, imageType: 'clip', ...dims });
+      }
+    }
+  }
+
+  return files;
 }
 
 // Aliases used throughout file (KIE defaults; overridden per-job via getImageProvider)
@@ -422,8 +505,10 @@ async function handleAdCreativeDesigner(job) {
     task_name, task_date, output_dir, project_dir, platform_targets,
     language, campaign_brief,
     image_count = 1, image_formats = ['carousel_1080x1080'],
-    image_source = 'brand',
+    image_source: rawImageSource = 'brand',
+    image_folder = null,
   } = job.data;
+  const { source: image_source, folder: imageFolder } = resolveImageSource(rawImageSource, image_folder);
   const absAdsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
   fs.mkdirSync(absAdsDir, { recursive: true });
 
@@ -470,18 +555,19 @@ For EACH story, create a separate HTML file and render via Playwright at 1080x19
 Each story has one bold key message with large text.`;
   }
 
-  const brandAssets = getProjectAssets(project_dir);
-  const assetList = formatAssetList(brandAssets);
+  // ── Resolve image source ──────────────────────────────────────────────────
+  const providerName = job.data.image_provider || IMAGE_PROVIDER;
 
   // ── Pre-generate images via API if image_source === 'api' ──────────────────
   let apiGeneratedAssets = [];
   if (image_source === 'api') {
     const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
     const useBrand = job.data.use_brand_overlay !== false;
-    log(output_dir, 'ad_creative_designer', `Generating ${image_count} images via KIE API (${model}, brand=${useBrand})...`);
+    log(output_dir, 'ad_creative_designer', `Generating ${image_count} images via ${providerName} (${model}, brand=${useBrand})...`);
     try {
       apiGeneratedAssets = await generateApiImages(
-        output_dir, project_dir, model, image_count, image_formats, campaign_brief, useBrand
+        output_dir, project_dir, model, image_count, image_formats, campaign_brief, useBrand,
+        [], [], providerName
       );
       log(output_dir, 'ad_creative_designer', `Generated ${apiGeneratedAssets.length} images → ${output_dir}/imgs/`);
     } catch (err) {
@@ -494,7 +580,6 @@ Each story has one bold key message with large text.`;
       const rejectedPath = path.resolve(PROJECT_ROOT, output_dir, 'imgs', 'rejected.json');
       process.stdout.write(`[IMAGE_APPROVAL_NEEDED] ${output_dir}\n`);
       log(output_dir, 'ad_creative_designer', '[IMAGE_APPROVAL_NEEDED] Waiting for user to approve generated images...');
-      // Write signal file so bot can re-detect after restart
       fs.writeFileSync(path.resolve(PROJECT_ROOT, output_dir, 'imgs', 'approval_needed.json'),
         JSON.stringify({ type: 'images', output_dir, ts: Date.now() }));
 
@@ -511,13 +596,13 @@ Each story has one bold key message with large text.`;
     }
   }
 
-  // Build image source instructions based on image_source field
+  // ── Build image source instructions ────────────────────────────────────────
   let imageSourceSection = '';
   if (image_source === 'api') {
     if (apiGeneratedAssets.length > 0) {
       const generatedList = formatAssetList(apiGeneratedAssets);
       imageSourceSection = `
-STEP 2 — AI-generated images (generated via KIE API — use these):
+STEP 2 — AI-generated images (generated via ${providerName} API — use these):
 ${generatedList}
 
 These images were generated specifically for this campaign. Use them as <img src="file://<absolute_path>"> in your HTML.
@@ -528,16 +613,50 @@ STEP 2 — Image source: CSS-only (API generation failed or unavailable)
 - Use CSS gradients, bold typography, and geometric shapes
 - No <img> tags — pure HTML/CSS visual design`;
     }
-  } else if (image_source === 'pexels') {
-    const pexelsKey = process.env.PEXELS_API_KEY || '';
-    imageSourceSection = `
-STEP 2 — Image source: PEXELS STOCK PHOTOS
-- Fetch relevant stock photos from Pexels API (key: ${pexelsKey})
-- Use: https://api.pexels.com/v1/search?query=<theme>&per_page=5 with header Authorization: ${pexelsKey}
-- Download the best photo to ${output_dir}/imgs/ and use as <img src="file://...">
-- Choose photos that match the campaign emotional theme`;
+  } else if (image_source === 'free') {
+    const freeProvider = getFreeImageProvider();
+    if (freeProvider) {
+      const authNote = freeProvider.authHeader
+        ? `Header: ${freeProvider.authHeader}: ${freeProvider.key}`
+        : `Parameter: key=${freeProvider.key}`;
+      imageSourceSection = `
+STEP 2 — Image source: ${freeProvider.name.toUpperCase()} (free stock photos)
+- Search: GET ${freeProvider.searchUrl}?query=<theme>&per_page=5
+  ${authNote}
+- Download the best photos to ${output_dir}/imgs/ and use as <img src="file://...">
+- Choose photos that match the campaign emotional theme
+- If a photo has visible text or watermarks, set image_type: "banner" (no cropping)`;
+    } else {
+      imageSourceSection = `
+STEP 2 — Image source: CSS-only (no free image provider configured — set PEXELS_API_KEY, UNSPLASH_ACCESS_KEY, or PIXABAY_API_KEY in .env)
+- Use CSS gradients, bold typography, and geometric shapes
+- No <img> tags — pure HTML/CSS visual design`;
+    }
+  } else if (image_source === 'folder') {
+    const folderAssets = imageFolder ? getFolderAssets(imageFolder) : [];
+    const folderList = formatAssetList(folderAssets);
+    if (folderAssets.length > 0) {
+      imageSourceSection = `
+STEP 2 ��� Images from user-specified folder (MANDATORY — use these):
+${folderList}
+
+CRITICAL IMAGE RULES:
+- Embed these images as <img src="file://<absolute_path>"> in your HTML
+- Choose the most contextually relevant image for each slide (different image per slide)
+- Apply CSS: semi-transparent overlays, gradients, blur effects ON TOP of real images
+- Text must be readable — use text-shadow, backdrop-filter blur, or dark overlay bands
+- BANNER images (marked [banner]): use object-fit: contain, never cover
+- VIDEO CLIPS (marked [clip]): reference in layout.json, do NOT embed in HTML`;
+    } else {
+      imageSourceSection = `
+STEP 2 — Image source: folder "${imageFolder || '(not specified)'}" — no images found
+- Falling back to CSS-only: gradients, bold typography, and geometric shapes
+- No <img> tags — pure HTML/CSS visual design`;
+    }
   } else {
     // brand (default)
+    const brandAssets = getProjectAssets(project_dir);
+    const assetList = formatAssetList(brandAssets);
     imageSourceSection = `
 STEP 2 — Available brand images (MANDATORY — use these real images):
 ${assetList}
@@ -548,30 +667,39 @@ CRITICAL IMAGE RULES:
 - Choose the most contextually relevant image for each slide (different image per slide)
 - Apply CSS: semi-transparent overlays, gradients, blur effects ON TOP of real images
 - Text must be readable — use text-shadow, backdrop-filter blur, or dark overlay bands
-- ⚠️ BANNER images (marked [banner] in the list): use object-fit: contain, never object-fit: cover — the full image must be visible, no cropping
-- 🎬 VIDEO CLIPS (marked [clip] in the list): reference the clip path in layout.json but do NOT embed in HTML — note it for the Distribution Agent`;
+- BANNER images (marked [banner] in the list): use object-fit: contain, never object-fit: cover — the full image must be visible, no cropping
+- VIDEO CLIPS (marked [clip] in the list): reference the clip path in layout.json but do NOT embed in HTML — note it for the Distribution Agent`;
   }
 
-  const prompt = `You are the Ad Creative Designer. Follow the skill defined in skills/ad-creative-designer/SKILL.md for brand guidelines, but adapt the output format as instructed below.
+  const prompt = `You are the Ad Creative Designer. Your role is PURELY VISUAL — you design and render ad images. You do NOT write copy.
+
+Follow the skill defined in skills/ad-creative-designer/SKILL.md for brand guidelines, but adapt the output format as instructed below.
 
 Task: Create multiple static ad creatives for the "${task_name}" campaign.
 Date: ${task_date}
 Platforms: ${platform_targets.join(', ')}
-Research input: ${output_dir}/research_results.json
 ${langInstruction}${briefInstruction}
 
-STEP 1 — Read brand knowledge FIRST (before designing anything):
-- ${project_dir}/knowledge/brand_identity.md — extract: color palette, typography, tone, approved CTAs
-- ${project_dir}/knowledge/product_campaign.md — extract: product features, campaign angles, assets described
-- ${project_dir}/knowledge/platform_guidelines.md — extract: format requirements per platform
-- ${output_dir}/research_results.json — extract: winning angles, emotional hooks, audience insights
+STEP 1 — Read ALL inputs FIRST (before designing anything):
+- ${output_dir}/creative/creative_brief.json — campaign angle, emotional hook, visual direction (mood, colors, photography style, typography mood), approved CTAs
+- ${output_dir}/copy/narrative.json — MANDATORY: the campaign narrative with headlines, carousel_texts, story_texts, key_phrases, and approved CTAs. This is your text source.
+- ${project_dir}/knowledge/brand_identity.md — color palette, typography, tone
+- ${project_dir}/knowledge/product_campaign.md — product features, assets described
+- ${project_dir}/knowledge/platform_guidelines.md — format requirements per platform
+
+COPY RULE: You MUST use the text from narrative.json. Do NOT invent headlines, subtext, or CTAs.
+- For carousel slides: read narrative.json → carousel_texts (one entry per slide)
+- For stories: read narrative.json → story_texts (one entry per story)
+- Headlines: read narrative.json → headlines
+- CTAs: use ONLY narrative.json → approved_ctas
+- If narrative.json is missing, fall back to creative_brief.json → key_messages
 ${imageSourceSection}
 
-STEP 3 — Generate ads:
+STEP 3 — Design and render ads:
 ${imageInstructions}
 
 STEP 4 — Save ALL files to ${output_dir}/ads/:
-- layout.json (metadata: filename, dimensions, concept, copy, images_used array)
+- layout.json (metadata: filename, dimensions, concept, copy_source, images_used array)
 - All HTML source files
 - All PNG renders (via Playwright)
 
@@ -594,17 +722,17 @@ COMPOSITION & LAYOUT:
 - For carousels: each slide has ONE primary message — no information overload
 
 TYPOGRAPHY (critical):
-- Maximum 2 font sizes per slide: one for headline (80–120px), one for subtext (36–52px)
+- Maximum 2 font sizes per slide: one for headline (80-120px), one for subtext (36-52px)
 - Headlines: ALL CAPS or Title Case, never sentence case for impact
-- Line height: 1.1–1.2 for headlines, 1.4–1.6 for body text
+- Line height: 1.1-1.2 for headlines, 1.4-1.6 for body text
 - Letter spacing: +0.02em to +0.08em for headlines — gives premium feel
-- Hierarchy rule: headline → subtext → CTA — each 30–40% smaller than the previous
+- Hierarchy rule: headline > subtext > CTA — each 30-40% smaller than the previous
 - NEVER use more than 8 words on a headline — if longer, split into headline + subtext
 
 COLOR & CONTRAST:
 - Text on image: ALWAYS use at least one of: dark scrim (rgba 0,0,0,0.5+), blur backdrop, gradient overlay, or solid color band
 - Contrast ratio minimum: 4.5:1 for body text, 3:1 for large headlines (WCAG AA)
-- Use brand accent color SPARINGLY — 1–2 elements max (CTA button, underline, badge)
+- Use brand accent color SPARINGLY — 1-2 elements max (CTA button, underline, badge)
 - Gradient overlays: prefer bottom-to-top (text lives at bottom) or full-bleed subtle vignette
 
 VISUAL EFFECTS (use inline CSS):
@@ -615,13 +743,13 @@ VISUAL EFFECTS (use inline CSS):
 - Overlay gradient: linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)
 
 CSS ANIMATION (capture the "first-frame" of the animation for the screenshot):
-- Headline: animate fade-up — transform: translateY(20px) → 0; opacity: 0 → 1
-- CTA badge: animate scale-in — transform: scale(0.9) → 1; opacity: 0 → 1; delay 0.3s
+- Headline: animate fade-up — transform: translateY(20px) > 0; opacity: 0 > 1
+- CTA badge: animate scale-in — transform: scale(0.9) > 1; opacity: 0 > 1; delay 0.3s
 - Set animation-fill-mode: both and animation-duration: 0.5s — Playwright captures at ~600ms, so they'll be fully visible
 
-SLIDE-SPECIFIC ANGLES (for carousels):
-- Slide 1 (Hook): Bold question or statement. Minimum text. Maximum visual impact.
-- Middle slides: One benefit per slide. Human/emotional imagery if possible. Short copy.
+SLIDE-SPECIFIC DESIGN (for carousels):
+- Slide 1 (Hook): Maximum visual impact. Bold treatment of the hook caption.
+- Middle slides: One benefit per slide. Human/emotional imagery if possible.
 - Last slide (CTA): Brand logo visible, CTA button prominent, URL/handle clear.
 
 CTA BUTTON DESIGN:
@@ -646,8 +774,10 @@ async function handleVideoAdSpecialist(job) {
     task_name, task_date, output_dir, project_dir, platform_targets,
     language, campaign_brief,
     video_count = 1, video_briefs = [],
-    image_source = 'brand',
+    image_source: rawImageSource = 'brand',
+    image_folder = null,
   } = job.data;
+  const { source: image_source, folder: imageFolder } = resolveImageSource(rawImageSource, image_folder);
   const absVideoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
   fs.mkdirSync(absVideoDir, { recursive: true });
 
@@ -700,29 +830,57 @@ ${musicInstructions}`;
   // ── Build image source section based on image_source ───────────────────────
   // NOTE: for 'api' mode, images are generated AFTER the scene plan is written
   // so that each scene's image_prompt drives generation (sync script ↔ image)
+  const providerNameVideo = job.data.image_provider || IMAGE_PROVIDER;
   let imageSourceSection = '';
   if (image_source === 'api') {
     imageSourceSection = `
-STEP 2 — Image source: KIE AI API (images will be generated AFTER you write the scene plan)
+STEP 2 — Image source: ${providerNameVideo} API (images will be generated AFTER you write the scene plan)
 - Set "image": null for all scenes in the JSON
 - For EACH scene, add an "image_prompt" field: a concise English visual description (max 200 chars)
   of exactly what should be shown visually in that scene — derived from the scene's narration and purpose
   Example: "tired person sitting on bed at sunrise, exhausted expression, warm muted light, cinematic"
 - The pipeline will generate one image per scene using your image_prompt + brand colors
 - Do NOT use generic descriptions — each image_prompt must match what is being said/shown in that scene`;
-  } else if (image_source === 'pexels') {
-    const pexelsKey = process.env.PEXELS_API_KEY || '';
-    imageSourceSection = `
-STEP 2 — Image source: PEXELS STOCK PHOTOS
-- Fetch relevant stock photos from Pexels API before writing scene plans
-- API key: ${pexelsKey}
-- Search: GET https://api.pexels.com/v1/search?query=<theme>&per_page=10&orientation=portrait
-  Header: Authorization: ${pexelsKey}
+  } else if (image_source === 'free') {
+    const freeProvider = getFreeImageProvider();
+    if (freeProvider) {
+      const authNote = freeProvider.authHeader
+        ? `Header: ${freeProvider.authHeader}: ${freeProvider.key}`
+        : `Parameter: key=${freeProvider.key}`;
+      imageSourceSection = `
+STEP 2 — Image source: ${freeProvider.name.toUpperCase()} (free stock photos)
+- Search: GET ${freeProvider.searchUrl}?query=<theme>&per_page=10&orientation=portrait
+  ${authNote}
 - Download the best matching photo for each scene to ${output_dir}/imgs/scene_0N.jpg
 - Use the downloaded absolute path as the scene "image" field
-- Set "image_type": "raw" for clean stock photos (no text visible in the image)
-- If a stock photo has visible text, credits, or watermarks, set "image_type": "banner" — renderer will letterbox it instead of cropping
+- Set "image_type": "raw" for clean stock photos (no text visible)
+- If a stock photo has visible text/watermarks, set "image_type": "banner" — renderer will letterbox
 - Choose photos that match the scene's emotional context (hook=dramatic, cta=warm/inviting)`;
+    } else {
+      imageSourceSection = `
+STEP 2 — Image source: no free provider configured (set PEXELS_API_KEY, UNSPLASH_ACCESS_KEY, or PIXABAY_API_KEY in .env)
+- Use CSS-only backgrounds in the scene plan`;
+    }
+  } else if (image_source === 'folder') {
+    const folderAssets = imageFolder ? getFolderAssets(imageFolder) : [];
+    const folderList = formatAssetList(folderAssets);
+    if (folderAssets.length > 0) {
+      imageSourceSection = `
+STEP 2 — Images from user-specified folder (study dimensions before assigning):
+${folderList}
+
+IMAGE ANALYSIS RULES (mandatory before building scene plan):
+- Read each image's orientation: portrait images work best for 1080x1920 video
+- Choose images whose visual content matches the scene's emotional type
+- Never assign the same image to two scenes
+- BANNER images (marked [banner]): set "image_type": "banner" — letterbox only
+- VIDEO CLIPS (marked [clip]): set "image_type": "clip" — use as video source
+- Raw photos (marked [raw]): set "image_type": "raw" — Ken Burns effects applied`;
+    } else {
+      imageSourceSection = `
+STEP 2 — Image source: folder "${imageFolder || '(not specified)'}" — no images found
+- Use CSS-only backgrounds in the scene plan`;
+    }
   } else {
     // brand (default) — include metadata so agent can make smart decisions
     const brandAssets = getProjectAssets(project_dir);
@@ -732,7 +890,7 @@ STEP 2 — Available brand images (with dimensions — study before assigning to
 ${assetList}
 
 IMAGE ANALYSIS RULES (mandatory before building scene plan):
-- Read each image's orientation: portrait images work best for 1080×1920 video (less crop needed)
+- Read each image's orientation: portrait images work best for 1080x1920 video (less crop needed)
 - For landscape images in portrait video: the renderer will center-crop — plan text_overlay to avoid important image areas at the edges
 - Choose images whose visual content matches the scene's emotional type:
   • hook scene → most dramatic/striking image
@@ -740,9 +898,9 @@ IMAGE ANALYSIS RULES (mandatory before building scene plan):
   • solution/benefit → product, community, positive outcome images
   • cta → clearest, most inviting image — brand logo visible if possible
 - Never assign the same image to two scenes
-- Prefer portrait-oriented images for 1080×1920 format (they need less cropping)
-- ⚠️ BANNER images (marked [banner] above): set "image_type": "banner" in the scene — renderer will only resize/letterbox, never crop or apply Ken Burns motion
-- 🎬 VIDEO CLIPS (marked [clip] above): set "image_type": "clip" in the scene — renderer uses clip directly as video input, no static image processing
+- Prefer portrait-oriented images for 1080x1920 format (they need less cropping)
+- BANNER images (marked [banner] above): set "image_type": "banner" in the scene — renderer will only resize/letterbox, never crop or apply Ken Burns motion
+- VIDEO CLIPS (marked [clip] above): set "image_type": "clip" in the scene — renderer uses clip directly as video input, no static image processing
 - Raw photos (marked [raw]): set "image_type": "raw" — renderer will apply Ken Burns zoom/pan effects`;
   }
 
@@ -970,6 +1128,356 @@ After saving all files, print exactly: [MOTION_PLAN_DONE] ${outputDir}`;
   await runClaude(prompt, 'motion_director', outputDir, 300000);
 }
 
+// ── Video Editor Agent (Diretor de Edição) ──────────────────────────────────
+
+async function handleVideoEditorAgent(job) {
+  const {
+    task_name, task_date, output_dir, project_dir, platform_targets,
+    language, campaign_brief,
+    video_count = 1, video_briefs = [],
+    image_source: rawImageSource = 'brand',
+    image_folder = null,
+  } = job.data;
+  const { source: image_source, folder: imageFolder } = resolveImageSource(rawImageSource, image_folder);
+  const absVideoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  fs.mkdirSync(absVideoDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: All text overlays, narration and copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  const hasElevenLabs = !!process.env.ELEVENLABS_API_KEY;
+
+  const videoBriefsText = video_briefs.length > 0
+    ? video_briefs.map((b, i) => `  ${i + 1}. ${b}`).join('\n')
+    : Array.from({ length: video_count }, (_, i) =>
+        `  ${i + 1}. Video ${i + 1} — 60 seconds, professional edit with 30-50 rapid cuts`
+      ).join('\n');
+
+  // Check for background music
+  const musicDir = path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music');
+  const musicFiles = fs.existsSync(musicDir)
+    ? fs.readdirSync(musicDir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f)).map(f => `${project_dir}/assets/music/${f}`)
+    : [];
+  const musicInstructions = musicFiles.length > 0 ? `
+BACKGROUND MUSIC (available files):
+${musicFiles.map(f => `  - ${f}`).join('\n')}
+- Set "music" in the scene plan to the chosen file path
+- Set "music_volume" to 0.10–0.20 (default 0.15)
+` : `
+BACKGROUND MUSIC: No music files found. Set "music": null in the scene plan.
+`;
+
+  const audioInstructions = hasElevenLabs ? `
+AUDIO NARRATION (ElevenLabs available):
+- Write a narration script (50-60 seconds of natural speech for 60s videos)
+- Generate narration: node pipeline/generate-audio.js <output.mp3> "<script>" [rachel|bella|antoni]
+- Save as: ${output_dir}/audio/video_0N_narration.mp3
+- Recommended voices: rachel (warm/emotional), bella (clear/friendly), antoni (professional)
+${musicInstructions}` : `
+AUDIO: ElevenLabs not configured. Generate silent videos. Narration scripts only.
+${musicInstructions}`;
+
+  // Image source section
+  const providerNameEditor = job.data.image_provider || IMAGE_PROVIDER;
+  let imageSourceSection = '';
+  if (image_source === 'api') {
+    imageSourceSection = `
+IMAGE SOURCE: ${providerNameEditor} API (images will be generated AFTER you write the scene plan)
+- Set "image": null for all scenes
+- Add "image_prompt" field per scene: concise English description (max 200 chars)
+- The pipeline generates one image per UNIQUE prompt, then maps it to multiple cuts
+- Output a "unique_images" field listing distinct prompts (max 15)
+- Multiple cuts can share the same generated image with different crop_focus and motion`;
+  } else if (image_source === 'free') {
+    const freeProvider = getFreeImageProvider();
+    if (freeProvider) {
+      const authNote = freeProvider.authHeader
+        ? `Header: ${freeProvider.authHeader}: ${freeProvider.key}`
+        : `Parameter: key=${freeProvider.key}`;
+      imageSourceSection = `
+IMAGE SOURCE: ${freeProvider.name.toUpperCase()} (free stock photos)
+- Search: GET ${freeProvider.searchUrl}?query=<theme>&per_page=10&orientation=portrait
+  ${authNote}
+- Download 10-15 unique photos to ${output_dir}/imgs/
+- Map multiple cuts to the same photo with different crop_focus and motion`;
+    } else {
+      imageSourceSection = `
+IMAGE SOURCE: no free provider configured (set PEXELS_API_KEY, UNSPLASH_ACCESS_KEY, or PIXABAY_API_KEY in .env)`;
+    }
+  } else if (image_source === 'folder') {
+    const folderAssets = imageFolder ? getFolderAssets(imageFolder) : [];
+    const folderList = formatAssetList(folderAssets);
+    if (folderAssets.length > 0) {
+      imageSourceSection = `
+FOLDER IMAGES (study dimensions — reuse creatively across 30-50 cuts):
+${folderList}
+
+REUSE STRATEGY (with ${folderAssets.length} images for 30-50 cuts):
+- Same image + different crop_focus = visually distinct
+- Same image + different motion = feels new
+- Same image + different overlay = different mood
+- Maximum 5 uses per image
+- Never assign same image to 2 CONSECUTIVE cuts`;
+    } else {
+      imageSourceSection = `
+IMAGE SOURCE: folder "${imageFolder || '(not specified)'}" — no images found`;
+    }
+  } else {
+    // brand (default)
+    const brandAssets = getProjectAssets(project_dir);
+    const assetList = formatAssetList(brandAssets);
+    imageSourceSection = `
+BRAND IMAGES (study dimensions — reuse creatively across 30-50 cuts):
+${assetList}
+
+REUSE STRATEGY (with ${brandAssets.length} images for 30-50 cuts):
+- Same image + different crop_focus = visually distinct (center-top vs center-bottom vs left)
+- Same image + different motion = feels new (zoom_in intimate vs pan_right discovery)
+- Same image + different overlay = different mood (dark vs warm vs cool)
+- Maximum 5 uses per image
+- Never assign same image to 2 CONSECUTIVE cuts`;
+  }
+
+  // ── Build the Video Editor Agent prompt ──────────────────────────────────────
+  const prompt = `You are the Video Editor Agent (Diretor de Edição). Follow the skill defined in skills/video-editor-agent/SKILL.md exactly.
+
+You think like a PROFESSIONAL VIDEO EDITOR. You create 30-50 rapid cuts in 60 seconds — NOT a 5-scene slideshow.
+
+Task: Create professional edit plans for ${video_count} videos — "${task_name}" campaign.
+Date: ${task_date}
+Platforms: ${platform_targets.join(', ')}
+Research input: ${output_dir}/research_results.json
+Creative brief: ${output_dir}/creative/creative_brief.json
+${langInstruction}${briefInstruction}
+
+STEP 1 — Read ALL knowledge files:
+- ${project_dir}/knowledge/brand_identity.md
+- ${project_dir}/knowledge/product_campaign.md
+- ${output_dir}/research_results.json
+- ${output_dir}/creative/creative_brief.json (if exists)
+- skills/video-composition/advanced-composition-reference.md
+- skills/video-editor-agent/SKILL.md
+
+STEP 2 — Image assets:
+${imageSourceSection}
+
+STEP 3 — Video briefs:
+${videoBriefsText}
+
+STEP 4 — Audio:
+${audioInstructions}
+
+STEP 5 — For EACH video, follow the 4-phase process in SKILL.md:
+
+Phase A: Analyze inputs, select narrative framework, write narration script (50-60s)
+Phase B: Create Edit Decision List with 30-50 cuts (MANDATORY minimum 25 cuts for 60s energetic)
+Phase C: Assign images to cuts (reuse creatively — same image, different treatment)
+Phase D: Assign motion, text animation, transitions per cut
+
+CRITICAL RULES (enforced — plan will be rejected if violated):
+- MINIMUM 25 cuts for a 60s video (target 30-50)
+- NEVER same motion.type on 2 consecutive cuts
+- NEVER same text_layout.position on 3 consecutive cuts
+- First cut duration ≤ 1.5s (hook must be fast)
+- Last cut duration ≥ 3s (CTA needs reading time)
+- Cuts < 0.8s: NO text_overlay (too fast to read)
+- Cuts with text_overlay ≥ 1.2s (minimum reading time)
+- Max 6 words per text_overlay
+- Text overlay COMPLEMENTS narration, never repeats it
+- Sum of all durations must equal video_length (tolerance ±2s)
+
+Save each plan to: ${output_dir}/video/video_0N_scene_plan_motion.json
+
+The JSON schema is defined in SKILL.md — follow it exactly.
+
+Also generate the ElevenLabs narration audio BEFORE saving the scene plan.
+
+IMPORTANT: ONLY generate scene plans and audio. Do NOT run render-video-ffmpeg.js.
+After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
+
+  await runClaude(prompt, 'video_editor_agent', output_dir, 900000);
+
+  // ── PHASE 1.5: Generate per-scene images from image_prompt (API mode) ───────
+  if (image_source === 'api') {
+    const jobProvider = job.data.image_provider || IMAGE_PROVIDER;
+    const imageProvider = getImageProvider(jobProvider);
+    const genImage = imageProvider.generateImage;
+    const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
+    const useBrand = job.data.use_brand_overlay !== false;
+    const brand = useBrand ? readBrandContext(project_dir) : null;
+    if (brand) log(output_dir, 'video_editor_agent', `Brand context: ${brand.brandName} | provider: ${jobProvider}`);
+
+    for (let i = 1; i <= video_count; i++) {
+      const idx = String(i).padStart(2, '0');
+      const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan_motion.json`);
+      if (!fs.existsSync(planPath)) continue;
+
+      let plan;
+      try { plan = JSON.parse(fs.readFileSync(planPath, 'utf-8')); }
+      catch (e) { log(output_dir, 'video_editor_agent', `Could not parse scene plan ${idx}: ${e.message}`); continue; }
+
+      const absImgsDir = path.resolve(PROJECT_ROOT, output_dir, 'imgs');
+      fs.mkdirSync(absImgsDir, { recursive: true });
+
+      // Deduplicate image_prompts — generate once, reuse across cuts
+      const promptMap = new Map(); // prompt → generated path
+      let planChanged = false;
+
+      for (let s = 0; s < plan.scenes.length; s++) {
+        const scene = plan.scenes[s];
+        if (!scene.image_prompt) continue;
+        if (scene.image && fs.existsSync(scene.image)) continue;
+
+        // Check if we already generated this prompt
+        if (promptMap.has(scene.image_prompt)) {
+          scene.image = promptMap.get(scene.image_prompt);
+          planChanged = true;
+          continue;
+        }
+
+        const filename = `video_${idx}_img_${String(promptMap.size + 1).padStart(2, '0')}.jpg`;
+        const outputPath = path.join(absImgsDir, filename);
+        const sceneType = scene.type || scene.id || 'solution';
+        const colorHint = brand?.colors?.length ? ` Colors: ${brand.colors.slice(0, 2).join(', ')}.` : '';
+        const moodMap = {
+          hook: 'dramatic tension, high contrast, strong impact',
+          tension: 'emotional challenge, aspiration, desire to change',
+          solution: 'transformation, empowerment, positive energy',
+          social_proof: 'community, people achieving, belonging',
+          cta: 'optimistic, inviting, forward momentum',
+        };
+        const mood = moodMap[sceneType] || moodMap.solution;
+        const rawPrompt = `${scene.image_prompt}. ${mood}. vertical 9:16.${colorHint} Cinematic lighting, photorealistic. No text, no words, no watermark.`;
+        const finalPrompt = rawPrompt.length > 490 ? rawPrompt.slice(0, 487) + '...' : rawPrompt;
+
+        log(output_dir, 'video_editor_agent', `Generating image ${promptMap.size + 1} for video_${idx}: ${scene.image_prompt.slice(0, 80)}`);
+        try {
+          await genImage(outputPath, finalPrompt, model, '9:16');
+          scene.image = outputPath;
+          promptMap.set(scene.image_prompt, outputPath);
+          planChanged = true;
+        } catch (err) {
+          log(output_dir, 'video_editor_agent', `Failed image gen: ${err.message}`);
+        }
+      }
+
+      // Map all scenes sharing the same prompt to the generated path
+      if (planChanged) {
+        for (const scene of plan.scenes) {
+          if (scene.image_prompt && !scene.image && promptMap.has(scene.image_prompt)) {
+            scene.image = promptMap.get(scene.image_prompt);
+          }
+        }
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+        log(output_dir, 'video_editor_agent', `Updated plan with ${promptMap.size} unique images for ${plan.scenes.length} cuts`);
+      }
+    }
+  }
+
+  // ── PHASE 2: Validate and auto-fix ──────────────────────────────────────────
+  for (let i = 1; i <= video_count; i++) {
+    const idx = String(i).padStart(2, '0');
+    const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan_motion.json`);
+    if (!fs.existsSync(planPath)) continue;
+
+    try {
+      const plan = JSON.parse(fs.readFileSync(planPath, 'utf-8'));
+      let fixes = 0;
+      const motionTypes = ['zoom_in', 'zoom_out', 'pan_right', 'pan_left'];
+      const positions = ['top', 'center', 'bottom'];
+
+      // Fix consecutive same motion
+      for (let s = 1; s < plan.scenes.length; s++) {
+        const prev = plan.scenes[s - 1].motion?.type;
+        const curr = plan.scenes[s].motion?.type;
+        if (prev && curr && prev === curr) {
+          const alts = motionTypes.filter(m => m !== curr);
+          plan.scenes[s].motion.type = alts[s % alts.length];
+          fixes++;
+        }
+      }
+
+      // Fix 3 consecutive same text position
+      for (let s = 2; s < plan.scenes.length; s++) {
+        const p1 = plan.scenes[s - 2].text_layout?.position;
+        const p2 = plan.scenes[s - 1].text_layout?.position;
+        const p3 = plan.scenes[s].text_layout?.position;
+        if (p1 && p2 && p3 && p1 === p2 && p2 === p3) {
+          const alts = positions.filter(p => p !== p3);
+          plan.scenes[s].text_layout.position = alts[s % alts.length];
+          fixes++;
+        }
+      }
+
+      if (fixes > 0) {
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+        log(output_dir, 'video_editor_agent', `Auto-fixed ${fixes} rule violations in video ${idx}`);
+      }
+
+      log(output_dir, 'video_editor_agent', `Video ${idx}: ${plan.scenes.length} cuts, ${plan.scenes.reduce((s, c) => s + c.duration, 0).toFixed(1)}s total`);
+    } catch (e) {
+      log(output_dir, 'video_editor_agent', `Validation error video ${idx}: ${e.message}`);
+    }
+  }
+
+  // ── PHASE 3: Wait for user approval ─────────────────────────────────────────
+  const approvalPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'approved.json');
+  const rejectedPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'rejected.json');
+
+  log(output_dir, 'video_editor_agent', '[VIDEO_APPROVAL_NEEDED] Waiting for approval (30 min timeout)...');
+  process.stdout.write(`[VIDEO_APPROVAL_NEEDED] ${output_dir}\n`);
+  fs.writeFileSync(path.resolve(PROJECT_ROOT, output_dir, 'video', 'approval_needed.json'),
+    JSON.stringify({ type: 'video_editor', output_dir, ts: Date.now() }));
+
+  const approved = await waitForFile(approvalPath, 1800000);
+  if (!approved) {
+    if (fs.existsSync(rejectedPath)) {
+      log(output_dir, 'video_editor_agent', 'User rejected the video plan. Skipping render.');
+      return { status: 'skipped', reason: 'rejected by user' };
+    }
+    log(output_dir, 'video_editor_agent', 'Approval timeout. Skipping video render.');
+    return { status: 'skipped', reason: 'approval timeout' };
+  }
+
+  // ── PHASE 4: Render (no motion_director needed — plan already enriched) ────
+  log(output_dir, 'video_editor_agent', 'Starting video render...');
+
+  for (let i = 1; i <= video_count; i++) {
+    const idx = String(i).padStart(2, '0');
+    const videoOutput = path.resolve(PROJECT_ROOT, `${output_dir}/video/video_${idx}.mp4`);
+    const planToRender = `${output_dir}/video/video_${idx}_scene_plan_motion.json`;
+    const absScenePlan = path.resolve(PROJECT_ROOT, planToRender);
+
+    if (!fs.existsSync(absScenePlan)) {
+      log(output_dir, 'video_editor_agent', `Scene plan not found for video ${i}, skipping: ${absScenePlan}`);
+      continue;
+    }
+
+    log(output_dir, 'video_editor_agent', `Rendering video ${i}/${video_count}...`);
+    try {
+      execFileSync('node', [
+        path.resolve(PROJECT_ROOT, 'pipeline/render-video-ffmpeg.js'),
+        planToRender,
+        `${output_dir}/video/video_${idx}.mp4`,
+      ], {
+        cwd: PROJECT_ROOT,
+        stdio: 'pipe',
+        timeout: 300000,
+      });
+      log(output_dir, 'video_editor_agent', `Video ${i} rendered: ${videoOutput}`);
+    } catch (renderErr) {
+      log(output_dir, 'video_editor_agent', `ffmpeg render ${i} failed: ${renderErr.message.slice(0, 200)}`);
+    }
+  }
+
+  return { status: 'complete', output: `${output_dir}/video/` };
+}
+
 async function handleCopywriterAgent(job) {
   const { task_name, task_date, output_dir, project_dir, platform_targets, language, campaign_brief } = job.data;
   const absCopyDir = path.resolve(PROJECT_ROOT, output_dir, 'copy');
@@ -983,38 +1491,52 @@ async function handleCopywriterAgent(job) {
     ? `\nCampaign Brief: ${campaign_brief}`
     : '';
 
-  const prompt = `You are the Copywriter Agent. Follow the skill defined in skills/copywriter-agent/SKILL.md exactly.
+  const prompt = `You are the Copywriter Agent — the Campaign Narrator. Follow the skill defined in skills/copywriter-agent/SKILL.md.
 
-Task: Write platform-specific marketing copy for the "${task_name}" campaign.
+Your role is to create the NARRATIVE of the campaign — the story, the emotional arc, the key phrases that will guide ALL visual and platform content. You do NOT write platform-specific copy (captions, hashtags, descriptions) — that is done by platform agents later.
+
+Task: Create the campaign narrative for "${task_name}".
 Date: ${task_date}
 Platforms: ${platform_targets.join(', ')}
-Research input: ${output_dir}/research_results.json
 ${langInstruction}${briefInstruction}
 
-STEP 1 — Read brand knowledge FIRST:
-- ${project_dir}/knowledge/brand_identity.md — extract: approved CTAs, hashtag strategy, brand voice, emojis to avoid
-- ${project_dir}/knowledge/product_campaign.md — extract: product features, URLs, pricing, campaign angles
-- ${project_dir}/knowledge/platform_guidelines.md — extract: platform-specific rules and format constraints
-- ${output_dir}/research_results.json — extract: winning hooks, trending topics, audience language patterns
+STEP 1 — Read ALL inputs:
+- ${output_dir}/creative/creative_brief.json — campaign angle, emotional hook, key messages, approved CTAs, visual direction, guardrails
+- ${project_dir}/knowledge/brand_identity.md — brand voice, tone, approved CTAs, what to avoid
+- ${project_dir}/knowledge/product_campaign.md — product features, selling points, campaign angles
+- ${output_dir}/research_results.json — winning hooks, audience insights, emotional triggers
 
-STEP 2 — Select ONE consistent campaign angle that:
-- Aligns with the brand voice from brand_identity.md
-- Uses the emotional hooks identified in the research
-- Works across all platforms (adapt tone, not message)
+STEP 2 — Build the campaign narrative:
+Based on the Creative Brief's angle and emotional hook, create:
+1. The emotional arc: hook → tension → solution → proof → CTA
+2. Key phrases and headlines (short, impactful, brand-aligned)
+3. The story in 1 paragraph (the "elevator pitch" of this campaign)
+4. Visual text elements (what goes ON the images/videos)
 
-STEP 3 — Write copy and save to ${output_dir}/copy/:
-- instagram_caption.txt — hook + benefit + CTA + line break + 5-8 hashtags (use brand hashtag strategy)
-- threads_post.txt — max 500 chars, brand tone, max 3 hashtags
-- youtube_metadata.json — title (60-70 chars, no emojis), description (2-3 sentences + CTA), 6-8 tags
-- copy_output.json — structured JSON with all platform copy, campaign_angle, and key_message
-- carousel_captions.json — array of captions (one per slide, building a narrative arc)
-- story_captions.json — array of short captions (one per story, bold and punchy)
+STEP 3 — Save to ${output_dir}/copy/:
+- narrative.json — the master narrative file:
+  {
+    "campaign_angle": "from creative brief",
+    "story": "1 paragraph — the campaign story",
+    "emotional_arc": ["hook phrase", "tension phrase", "solution phrase", "proof phrase", "cta phrase"],
+    "headlines": ["headline 1", "headline 2", "headline 3", ...],
+    "carousel_texts": ["slide 1 text", "slide 2 text", ...],
+    "story_texts": ["story 1 text", "story 2 text", ...],
+    "video_narration": "full narration script for video (50-60s of natural speech)",
+    "key_phrases": ["memorable phrase 1", "phrase 2", ...],
+    "approved_ctas": ["from creative brief"],
+    "tone": "description of the voice/tone for this campaign"
+  }
+- narrative.md — human-readable version of the narrative (for approval)
 
 QUALITY RULES:
-- Use ONLY approved CTAs from brand_identity.md — do not invent new ones
-- Use ONLY brand hashtags from brand_identity.md — no generic hashtags
-- Match the exact brand voice (urgent, empowering, community-focused, practical)
-- Every caption must have a clear hook in the first line`;
+- Use ONLY approved CTAs from creative_brief.json — do not invent new ones
+- Match the brand voice from brand_identity.md exactly
+- Headlines: max 6 words each, impactful, emotional
+- carousel_texts: one key message per slide, building a progression (hook → benefit → proof → CTA)
+- story_texts: bold, punchy, one message per story
+- video_narration: natural spoken language, matches the emotional arc
+- Every text must serve the campaign angle — no generic filler`;
 
   await runClaude(prompt, 'copywriter_agent', output_dir);
   return { status: 'complete', output: `${output_dir}/copy/` };
@@ -1028,32 +1550,558 @@ async function handleDistributionAgent(job) {
     ? 'IMPORTANT: Write the Publish MD file in Brazilian Portuguese (pt-BR).'
     : '';
 
-  const prompt = `You are the Distribution Agent. Follow the skill defined in skills/distribution-agent/SKILL.md exactly.
+  // Discover media and platform files
+  const adsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  const videoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  const platformsDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  const adFiles = fs.existsSync(adsDir) ? fs.readdirSync(adsDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)) : [];
+  const videoFiles = fs.existsSync(videoDir) ? fs.readdirSync(videoDir).filter(f => /\.mp4$/i.test(f)) : [];
+  const platformFiles = fs.existsSync(platformsDir) ? fs.readdirSync(platformsDir).filter(f => /\.json$/i.test(f)) : [];
 
-Task: Prepare distribution package for the "${task_name}" campaign.
+  const prompt = `You are the Distribution Agent. Follow the skill defined in skills/distribution-agent/SKILL.md.
+
+Task: Prepare the COMPLETE distribution package for the "${task_name}" campaign.
 Date: ${task_date}
 Platforms: ${platform_targets.join(', ')}
 Output directory: ${output_dir}/
 ${langInstruction}
 
-Read ${project_dir}/knowledge/brand_identity.md and ${project_dir}/knowledge/platform_guidelines.md.
+MEDIA FILES TO UPLOAD:
+- Images: ${adFiles.length > 0 ? adFiles.map(f => `${output_dir}/ads/${f}`).join(', ') : 'none'}
+- Videos: ${videoFiles.length > 0 ? videoFiles.map(f => `${output_dir}/video/${f}`).join(', ') : 'none'}
 
-Steps:
-1. Upload ALL media files (PNG, MP4) from ${output_dir}/ads/ and ${output_dir}/video/ to the Supabase "campaign-uploads" bucket using supabase-upload.js. Use filename convention: ${task_name}_${task_date}_<original_filename>. Save public URLs to ${output_dir}/media_urls.json.
-2. Read copy outputs from ${output_dir}/copy/ (threads_post.txt, instagram_caption.txt, youtube_metadata.json, carousel_captions.json, story_captions.json).
-3. Generate scheduling recommendations based on the research data.
-4. Create the file: ${output_dir}/Publish ${task_name} ${task_date}.md — with:
-   - Carousel post instructions (all slides + caption)
-   - Stories posting order
-   - Video posting metadata for each video
-   - Threads post text
-   - Scheduling recommendations
-   - Publishing checklist
+PLATFORM COPY (already produced by platform agents):
+- ${platformFiles.length > 0 ? platformFiles.map(f => `${output_dir}/platforms/${f}`).join(', ') : 'none'}
 
-DO NOT publish to any platform. Only generate the Publish MD advisory file.`;
+STEPS:
+1. UPLOAD — Run supabase-upload.js for EACH media file:
+   node pipeline/supabase-upload.js ${project_dir} ${task_name} ${task_date} <file1> <file2> ...
+   This uploads to the "campaign-uploads" bucket and saves ${output_dir}/media_urls.json with public URLs.
+
+2. READ PLATFORM COPY — Read all JSON files from ${output_dir}/platforms/:
+   - instagram.json — carousel caption, story sequence, reels caption, hashtags, scheduling
+   - youtube.json — title, description, tags, thumbnail text, scheduling
+   - threads.json — posts (main + thread + standalone), scheduling
+   Also read the .md versions for human-readable summaries.
+
+3. CHECK REWORK — If any platform JSON has "rework_needed" != null, log it as a warning in the Publish MD.
+
+4. ASSEMBLE PUBLISH MD — Create: ${output_dir}/Publish ${task_name} ${task_date}.md
+   Structure:
+   - Status checklist (one checkbox per platform)
+   - Media assets table (filename, platform, public URL from media_urls.json)
+   - Instagram section (carousel + stories + reels — copy from instagram.json, URLs from media_urls.json)
+   - YouTube section (per video — title, description, tags, video URL from media_urls.json)
+   - Threads section (all posts from threads.json)
+   - Scheduling calendar (combine scheduling from all platform JSONs into unified calendar)
+   - Rework warnings (if any)
+   - Execution instructions (reference this file by name to trigger publishing)
+
+DO NOT publish to any platform. Only generate the Publish MD advisory file.
+Publishing is ONLY triggered when the user explicitly references the Publish MD by name.`;
 
   await runClaude(prompt, 'distribution_agent', output_dir, 600000);
   return { status: 'complete', output: `${output_dir}/Publish ${task_name} ${task_date}.md` };
+}
+
+// ── Platform Agents ──────────────────────────────────────────────────────────────
+
+async function handlePlatformInstagram(job) {
+  const { task_name, task_date, output_dir, project_dir, language, campaign_brief } = job.data;
+  const absPlatformDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  fs.mkdirSync(absPlatformDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: ALL copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover visual assets produced in stages 2-3
+  const adsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  const videoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  const adFiles = fs.existsSync(adsDir) ? fs.readdirSync(adsDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)) : [];
+  const videoFiles = fs.existsSync(videoDir) ? fs.readdirSync(videoDir).filter(f => /\.mp4$/i.test(f)) : [];
+
+  const prompt = `You are the Instagram Platform Agent — a specialist in Instagram content strategy.
+
+Task: Create Instagram-ready copy for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+READ ALL INPUTS:
+- ${output_dir}/copy/narrative.json — campaign narrative, headlines, carousel_texts, story_texts, key_phrases, approved CTAs
+- ${output_dir}/creative/creative_brief.json — campaign angle, visual direction, guardrails
+- ${project_dir}/knowledge/brand_identity.md — brand voice, approved CTAs, hashtag strategy, emojis
+- ${project_dir}/knowledge/platform_guidelines.md — Instagram-specific rules and format constraints
+- ${output_dir}/research_results.json — audience insights, best posting times, trending topics
+
+VISUAL ASSETS PRODUCED (adapt your copy to complement these):
+- Images in ${output_dir}/ads/: ${adFiles.length > 0 ? adFiles.join(', ') : 'none'}
+- Videos in ${output_dir}/video/: ${videoFiles.length > 0 ? videoFiles.join(', ') : 'none'}
+- VIEW the images before writing — your captions must describe/complement what the viewer sees
+
+YOUR JOB:
+Transform the campaign narrative into Instagram-native copy. The MESSAGE comes from the narrative — you adapt tone, format, structure, and hashtags for Instagram. Your captions must work WITH the visuals, not ignore them.
+
+OUTPUT — save to ${output_dir}/platforms/instagram.json:
+{
+  "carousel": {
+    "caption": "main caption: hook in first line (before ...ver mais) + benefit + CTA + line breaks + 5-8 hashtags",
+    "slide_captions": ["alt text / context per slide — describe what each image shows"],
+    "hashtags": ["from brand_identity.md hashtag strategy"],
+    "posting_notes": "best time, format tips"
+  },
+  "stories": {
+    "sequence": [
+      { "slide": 1, "image": "filename", "text_overlay": "from narrative story_texts", "cta": "swipe up / link", "sticker": "poll/quiz/emoji slider suggestion" }
+    ],
+    "posting_notes": "timing, frequency"
+  },
+  "reels": {
+    "video": "video filename",
+    "caption": "short punchy caption for video reel",
+    "hashtags": ["relevant hashtags"],
+    "audio_suggestion": "trending audio or original narration"
+  },
+  "scheduling": {
+    "best_days": ["from research_results.json"],
+    "best_times": ["from research_results.json"],
+    "posting_order": "carousel first, then stories, then reel"
+  },
+  "rework_needed": null
+}
+
+REWORK: If any visual asset is unsuitable for Instagram (wrong aspect ratio, poor quality, missing format), set "rework_needed" to a description of what needs to change. Otherwise leave it null.
+
+Also save ${output_dir}/platforms/instagram.md — human-readable version for review.
+
+QUALITY RULES:
+- Use ONLY approved CTAs and hashtags from brand_identity.md
+- Caption hook must be in the FIRST LINE (before "...ver mais")
+- Carousel caption: 2200 chars max
+- Stories: bold, 1 message per story, suggest interactive stickers
+- Reels caption: short, punchy, trending hashtags
+- Match brand voice exactly — never generic`;
+
+  await runClaude(prompt, 'platform_instagram', output_dir, 600000);
+  return { status: 'complete', output: `${output_dir}/platforms/instagram.json` };
+}
+
+async function handlePlatformYouTube(job) {
+  const { task_name, task_date, output_dir, project_dir, language, campaign_brief } = job.data;
+  const absPlatformDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  fs.mkdirSync(absPlatformDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: ALL copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover video assets
+  const videoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  const videoFiles = fs.existsSync(videoDir) ? fs.readdirSync(videoDir).filter(f => /\.mp4$/i.test(f)) : [];
+  const scenePlans = fs.existsSync(videoDir) ? fs.readdirSync(videoDir).filter(f => /scene_plan.*\.json$/i.test(f)) : [];
+
+  const prompt = `You are the YouTube Platform Agent — a specialist in YouTube content optimization and SEO.
+
+Task: Create YouTube-ready metadata for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+READ ALL INPUTS:
+- ${output_dir}/copy/narrative.json — campaign narrative, video_narration script, key_phrases, approved CTAs
+- ${output_dir}/creative/creative_brief.json — campaign angle, visual direction
+- ${project_dir}/knowledge/brand_identity.md — brand voice, approved CTAs
+- ${project_dir}/knowledge/platform_guidelines.md — YouTube-specific rules
+- ${output_dir}/research_results.json — trending keywords, audience interests, competitor gaps
+
+VIDEO ASSETS PRODUCED:
+- Videos: ${videoFiles.length > 0 ? videoFiles.join(', ') : 'none'}
+- Scene plans: ${scenePlans.length > 0 ? scenePlans.join(', ') : 'none'}
+- Read scene plans to understand the video content and write accurate descriptions
+
+YOUR JOB:
+Transform the campaign narrative into YouTube-optimized metadata. Titles rank in search, descriptions convert viewers, tags improve discovery. Your metadata must accurately describe the VIDEO CONTENT.
+
+OUTPUT — save to ${output_dir}/platforms/youtube.json:
+{
+  "videos": [
+    {
+      "file": "video filename",
+      "title": "60-70 chars, keyword-rich, no emojis, curiosity-driven",
+      "description": "first 2 lines = hook + CTA (visible before fold). Then: 2-3 benefit sentences. Links. Hashtags at bottom.",
+      "tags": ["8-12 keyword tags for SEO"],
+      "category": "YouTube category",
+      "thumbnail_text": "2-4 words for thumbnail overlay",
+      "end_screen": "subscribe CTA + related video suggestion"
+    }
+  ],
+  "shorts": {
+    "video": "short video filename if available",
+    "title": "shorter title for Shorts format",
+    "description": "brief + hashtags",
+    "tags": ["shorts-specific tags"]
+  },
+  "scheduling": {
+    "best_days": ["from research_results.json"],
+    "best_times": ["from research_results.json"],
+    "posting_order": "long-form first, then Shorts 24h later"
+  },
+  "rework_needed": null
+}
+
+REWORK: If any video is unsuitable for YouTube (wrong duration, missing audio, poor quality), set "rework_needed" to a description of what needs to change. Otherwise leave null.
+
+Also save ${output_dir}/platforms/youtube.md — human-readable version for review.
+
+QUALITY RULES:
+- Title: 60-70 chars, front-load keywords, no clickbait that doesn't deliver
+- Description: first 160 chars appear in search — make them count
+- Tags: mix of broad + specific, brand name included
+- Use trending keywords from research_results.json
+- Match brand voice — informative but not corporate`;
+
+  await runClaude(prompt, 'platform_youtube', output_dir, 600000);
+  return { status: 'complete', output: `${output_dir}/platforms/youtube.json` };
+}
+
+async function handlePlatformThreads(job) {
+  const { task_name, task_date, output_dir, project_dir, language, campaign_brief } = job.data;
+  const absPlatformDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  fs.mkdirSync(absPlatformDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: ALL copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover visual assets for image attachment decisions
+  const adsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  const adFiles = fs.existsSync(adsDir) ? fs.readdirSync(adsDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)) : [];
+
+  const prompt = `You are the Threads Platform Agent — a specialist in Threads/Twitter-style short-form content.
+
+Task: Create Threads-ready posts for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+READ ALL INPUTS:
+- ${output_dir}/copy/narrative.json — campaign narrative, key_phrases, emotional_arc, approved CTAs
+- ${output_dir}/creative/creative_brief.json — campaign angle, guardrails
+- ${project_dir}/knowledge/brand_identity.md — brand voice, tone, what to avoid
+- ${project_dir}/knowledge/platform_guidelines.md — Threads-specific rules
+- ${output_dir}/research_results.json — trending topics, audience language
+
+VISUAL ASSETS AVAILABLE (for image attachments):
+- Images in ${output_dir}/ads/: ${adFiles.length > 0 ? adFiles.join(', ') : 'none'}
+- Decide which posts benefit from an image attachment and which work better as text-only
+
+YOUR JOB:
+Transform the campaign narrative into Threads-native content. Threads is conversational, direct, and punchy — like talking to a friend who happens to be an expert. NOT a copy of the Instagram caption.
+
+OUTPUT — save to ${output_dir}/platforms/threads.json:
+{
+  "posts": [
+    {
+      "type": "main",
+      "text": "main post — max 500 chars, hook + value + soft CTA",
+      "image": "filename from ads/ or null"
+    },
+    {
+      "type": "thread",
+      "text": "follow-up in thread — adds context, insight, or behind-the-scenes",
+      "image": null
+    },
+    {
+      "type": "standalone",
+      "text": "separate post for another day — different angle from the narrative",
+      "image": "filename or null"
+    }
+  ],
+  "scheduling": {
+    "best_days": ["from research_results.json"],
+    "best_times": ["from research_results.json"],
+    "posting_order": "main + thread same day, standalone next day"
+  },
+  "rework_needed": null
+}
+
+Also save ${output_dir}/platforms/threads.md — human-readable version for review.
+
+QUALITY RULES:
+- Max 500 chars per post
+- No more than 3 hashtags per post
+- Conversational tone — NOT a copy of Instagram caption
+- Main post must hook in first sentence
+- Thread follow-ups add NEW value, not just repeat
+- Match brand voice exactly`;
+
+  await runClaude(prompt, 'platform_threads', output_dir, 600000);
+  return { status: 'complete', output: `${output_dir}/platforms/threads.json` };
+}
+
+async function handlePlatformTikTok(job) {
+  const { task_name, task_date, output_dir, project_dir, language, campaign_brief } = job.data;
+  const absPlatformDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  fs.mkdirSync(absPlatformDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: ALL copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover video assets
+  const videoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  const videoFiles = fs.existsSync(videoDir) ? fs.readdirSync(videoDir).filter(f => /\.mp4$/i.test(f)) : [];
+
+  const prompt = `You are the TikTok Platform Agent — a specialist in TikTok viral content.
+
+Task: Create TikTok-ready content plan for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+READ ALL INPUTS:
+- ${output_dir}/copy/narrative.json — campaign narrative, emotional_arc, key_phrases, approved CTAs
+- ${output_dir}/creative/creative_brief.json — campaign angle, visual direction
+- ${project_dir}/knowledge/brand_identity.md — brand voice, tone
+- ${project_dir}/knowledge/platform_guidelines.md — TikTok-specific rules
+- ${output_dir}/research_results.json — trending topics, viral hooks, audience behavior
+
+VIDEOS AVAILABLE:
+- ${videoFiles.length > 0 ? videoFiles.join(', ') : 'none'}
+
+TikTok requires 9:16 vertical video (1080x1920). If existing videos are in a different format, set rework_needed with the format request.
+
+YOUR JOB:
+Create TikTok-native content. TikTok demands: hook in FIRST 2 SECONDS, fast pacing, trending sounds, authentic (not polished corporate). The content must feel native to the platform.
+
+OUTPUT — save to ${output_dir}/platforms/tiktok.json:
+{
+  "videos": [
+    {
+      "source_video": "existing video filename or null",
+      "format": "9:16",
+      "duration": "15-60s",
+      "caption": "short caption — max 150 chars for visibility, punchy, conversational",
+      "hashtags": ["mix of trending + niche, max 5"],
+      "sound": "trending sound suggestion or 'original audio'",
+      "hook_strategy": "what happens in the first 2 seconds to stop the scroll",
+      "text_overlays": ["key text that appears on screen during video"]
+    }
+  ],
+  "rework_needed": null,
+  "video_format_request": null,
+  "scheduling": {
+    "best_days": ["from research"],
+    "best_times": ["from research"],
+    "frequency": "posting cadence recommendation"
+  }
+}
+
+REWORK: If no 9:16 video exists, set:
+  "rework_needed": "Need 9:16 vertical video (1080x1920) for TikTok"
+  "video_format_request": { "format": "9:16", "duration": "15-30s", "style": "quick cuts, hook first 2s" }
+
+Also save ${output_dir}/platforms/tiktok.md — human-readable version.
+
+QUALITY RULES:
+- Hook in FIRST 2 seconds — no slow intros
+- Caption: max 150 chars visible (rest truncated)
+- Hashtags: max 5, mix trending + brand
+- Tone: authentic, not corporate — TikTok users scroll past polished ads
+- Match brand voice but adapt to TikTok culture`;
+
+  await runClaude(prompt, 'platform_tiktok', output_dir, 600000);
+  return { status: 'complete', output: `${output_dir}/platforms/tiktok.json` };
+}
+
+async function handlePlatformFacebook(job) {
+  const { task_name, task_date, output_dir, project_dir, language, campaign_brief } = job.data;
+  const absPlatformDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  fs.mkdirSync(absPlatformDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: ALL copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover assets
+  const adsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  const videoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  const adFiles = fs.existsSync(adsDir) ? fs.readdirSync(adsDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)) : [];
+  const videoFiles = fs.existsSync(videoDir) ? fs.readdirSync(videoDir).filter(f => /\.mp4$/i.test(f)) : [];
+
+  const prompt = `You are the Facebook Platform Agent — a specialist in Facebook content strategy across Feed, Stories, and Reels.
+
+Task: Create Facebook-ready content plan for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+READ ALL INPUTS:
+- ${output_dir}/copy/narrative.json — campaign narrative, headlines, key_phrases, approved CTAs
+- ${output_dir}/creative/creative_brief.json — campaign angle, visual direction
+- ${project_dir}/knowledge/brand_identity.md — brand voice, tone, CTAs
+- ${project_dir}/knowledge/platform_guidelines.md — Facebook-specific rules
+- ${output_dir}/research_results.json — audience demographics, engagement patterns
+
+VISUAL ASSETS:
+- Images: ${adFiles.length > 0 ? adFiles.join(', ') : 'none'}
+- Videos: ${videoFiles.length > 0 ? videoFiles.join(', ') : 'none'}
+
+Facebook content types:
+- Feed post (image or video): 16:9 landscape or 1:1 square, longer captions OK
+- Stories: 9:16 vertical, 15s segments, ephemeral
+- Reels: 9:16 vertical, 15-90s, algorithm-boosted
+- Video: 16:9 landscape preferred, up to 240 min
+
+YOUR JOB:
+Create Facebook-native content. Facebook favors: longer engagement, shares/comments, community building, video (especially Reels). Adapt the narrative for an audience that skews older and more community-oriented than Instagram.
+
+OUTPUT — save to ${output_dir}/platforms/facebook.json:
+{
+  "feed_post": {
+    "type": "image or video",
+    "media": "filename from ads/ or video/",
+    "format": "1:1 or 16:9",
+    "caption": "longer caption OK — hook + story + CTA + hashtags (3-5)",
+    "link": "URL if applicable"
+  },
+  "stories": {
+    "sequence": [
+      { "slide": 1, "media": "filename", "text_overlay": "bold text", "cta": "swipe action" }
+    ]
+  },
+  "reels": {
+    "source_video": "existing video or null",
+    "format": "9:16",
+    "caption": "short engaging caption",
+    "hashtags": ["relevant hashtags"]
+  },
+  "video": {
+    "source_video": "existing 16:9 video or null",
+    "title": "video title for Facebook",
+    "description": "video description"
+  },
+  "rework_needed": null,
+  "video_format_request": null,
+  "scheduling": {
+    "best_days": ["from research"],
+    "best_times": ["from research"],
+    "posting_order": "feed post, then stories, then reels"
+  }
+}
+
+REWORK: If you need a 16:9 video and only 9:16 exists (or vice versa), set:
+  "rework_needed": "description of what's needed"
+  "video_format_request": { "format": "16:9", "duration": "30-60s", "style": "description" }
+
+Also save ${output_dir}/platforms/facebook.md — human-readable version.
+
+QUALITY RULES:
+- Feed captions can be longer (up to 500 words) — use storytelling
+- Reels need hook in first 3 seconds
+- Stories: bold text, 1 message per slide
+- Community tone — encourage comments and shares
+- Match brand voice`;
+
+  await runClaude(prompt, 'platform_facebook', output_dir, 600000);
+  return { status: 'complete', output: `${output_dir}/platforms/facebook.json` };
+}
+
+async function handlePlatformLinkedIn(job) {
+  const { task_name, task_date, output_dir, project_dir, language, campaign_brief } = job.data;
+  const absPlatformDir = path.resolve(PROJECT_ROOT, output_dir, 'platforms');
+  fs.mkdirSync(absPlatformDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: ALL copy MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover image assets
+  const adsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  const adFiles = fs.existsSync(adsDir) ? fs.readdirSync(adsDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)) : [];
+
+  const prompt = `You are the LinkedIn Platform Agent — a specialist in LinkedIn professional content.
+
+Task: Create LinkedIn-ready content for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+READ ALL INPUTS:
+- ${output_dir}/copy/narrative.json — campaign narrative, key_phrases, approved CTAs
+- ${output_dir}/creative/creative_brief.json — campaign angle, visual direction
+- ${project_dir}/knowledge/brand_identity.md — brand voice, professional tone
+- ${project_dir}/knowledge/platform_guidelines.md — LinkedIn-specific rules
+- ${output_dir}/research_results.json — industry trends, professional audience insights
+
+VISUAL ASSETS:
+- Images: ${adFiles.length > 0 ? adFiles.join(', ') : 'none'}
+
+LinkedIn content types:
+- Post (text + image): 1200x627 landscape or 1080x1080 square
+- Article: long-form thought leadership
+- Document/carousel: PDF slides (swipeable)
+
+YOUR JOB:
+Adapt the campaign narrative for a PROFESSIONAL audience. LinkedIn rewards: thought leadership, data-driven insights, professional storytelling, industry relevance. NOT a copy of Instagram — reframe the message for business context.
+
+OUTPUT — save to ${output_dir}/platforms/linkedin.json:
+{
+  "post": {
+    "text": "professional post — hook first line (before ...see more) + insight + value + CTA. Max 3000 chars but front-load value in first 300.",
+    "image": "filename from ads/ or null",
+    "format": "1200x627 or 1080x1080",
+    "hashtags": ["3-5 professional hashtags"]
+  },
+  "article": {
+    "title": "thought leadership title if applicable",
+    "summary": "2-3 sentences — only if the campaign angle merits long-form",
+    "publish": false
+  },
+  "carousel_document": {
+    "slides": ["slide 1 text", "slide 2 text"],
+    "description": "PDF carousel concept — if applicable",
+    "publish": false
+  },
+  "rework_needed": null,
+  "scheduling": {
+    "best_days": ["Tue, Wed, Thu — highest LinkedIn engagement"],
+    "best_times": ["8-10 AM or 12-1 PM"],
+    "posting_notes": "post once, engage in comments for 2 hours after"
+  }
+}
+
+Also save ${output_dir}/platforms/linkedin.md — human-readable version.
+
+QUALITY RULES:
+- Professional tone — not corporate jargon, but not casual/slang either
+- Hook in FIRST LINE (before "...see more" fold)
+- Add value/insight — LinkedIn penalizes pure self-promotion
+- Hashtags: 3-5 professional/industry hashtags
+- If campaign angle doesn't fit LinkedIn (e.g. pure lifestyle), acknowledge it and suggest a professional reframe
+- Match brand voice adapted for professional context`;
+
+  await runClaude(prompt, 'platform_linkedin', output_dir, 600000);
+  return { status: 'complete', output: `${output_dir}/platforms/linkedin.json` };
 }
 
 // ── Handler registry ────────────────────────────────────────────────────────────
@@ -1061,11 +2109,18 @@ DO NOT publish to any platform. Only generate the Publish MD advisory file.`;
 const HANDLERS = {
   research_agent: handleResearchAgent,
   creative_director: handleCreativeDirector,
+  copywriter_agent: handleCopywriterAgent,
   ad_creative_designer: handleAdCreativeDesigner,
   video_ad_specialist: handleVideoAdSpecialist,
-  copywriter_agent: handleCopywriterAgent,
+  video_editor_agent: handleVideoEditorAgent,
+  platform_instagram: handlePlatformInstagram,
+  platform_youtube: handlePlatformYouTube,
+  platform_tiktok: handlePlatformTikTok,
+  platform_facebook: handlePlatformFacebook,
+  platform_threads: handlePlatformThreads,
+  platform_linkedin: handlePlatformLinkedIn,
   distribution_agent: handleDistributionAgent,
-  motion_director: async (job) => ({ status: 'complete' }), // handled inline inside video_ad_specialist
+  motion_director: async (job) => ({ status: 'complete' }),
 };
 
 // ── Logger ────────────────────────────────────────────────────────────────────
