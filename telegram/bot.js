@@ -1093,7 +1093,13 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   if (payload.skip_video)    skipFlags.push('video');
 
   const activeProvider = process.env.IMAGE_PROVIDER || 'kie';
-  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (gratis)', api: `${activeProvider === 'pollinations' ? 'Pollinations' : 'KIE'} API (geração)` };
+  const freeProvider = process.env.FREE_IMAGE_PROVIDER || 'pexels';
+  const imgSource = {
+    brand: 'imagens do projeto', marca: 'imagens do projeto',
+    free: `banco gratis (${freeProvider})`, gratis: `banco gratis (${freeProvider})`,
+    api: `${activeProvider === 'pollinations' ? 'Pollinations' : 'KIE'} API (geracao IA)`,
+    folder: 'pasta customizada', pasta: 'pasta customizada',
+  };
   const modelLabels = {
     // KIE
     'z-image': 'Z-Image', 'z-image-turbo': 'Z-Image Turbo',
@@ -1200,7 +1206,8 @@ Return a JSON object with these fields:
     "stage1": "humano",
     "stage2": "humano",
     "stage3": "humano",
-    "stage4": "humano"
+    "stage4": "humano",
+    "stage5": "humano"
   },
   "notifications": true,
   "video_audio": "narration",
@@ -1211,7 +1218,7 @@ Rules:
 - task_name: derive from the campaign theme, short and snake_case
 - image_count: default 5 for carousel; use what user says
 - video_count: how many videos requested (default 1)
-- image_source: "brand" if user mentions brand images; "pexels" if free stock photos; "api" if paid AI image generation
+- image_source: "brand" (or "marca") if user mentions brand images, project images, fotos da marca; "free" (or "gratis") if user mentions free stock photos, banco de imagens, pexels, unsplash, pixabay; "api" if user mentions AI generation, gerar imagens, criar imagens com IA; "folder" (or "pasta") if user specifies a folder path. Default "brand".
 - image_model: only relevant when image_source is "api". Default is ALWAYS "${process.env.KIE_DEFAULT_MODEL || 'z-image'}" (from .env). Only change if the user explicitly requests a different model. Options: "z-image", "z-image-turbo", "flux-kontext-pro", "flux-kontext-max", "gpt-image-1".
 - approval_modes: each stage can be "humano" (user must approve), "agente" (AI reviewer decides), or "auto" (advance automatically). Default "humano" for all. Set to "auto" if user says "sem aprovações", "automático", "full auto". Set to "agente" if user says "aprovação por agente", "agente revisa".
 - notifications: false only if user explicitly says "sem notificações", "silencioso", "não notificar".

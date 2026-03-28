@@ -913,7 +913,7 @@ After saving scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
     try {
       const renderScript = path.resolve(PROJECT_ROOT, 'pipeline', 'render-video-ffmpeg.js');
-      require('child_process').execFileSync('node', [renderScript, videoOutput, planPath], {
+      require('child_process').execFileSync('node', [renderScript, planPath, videoOutput], {
         cwd: PROJECT_ROOT,
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 300000,

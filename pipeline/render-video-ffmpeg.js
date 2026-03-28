@@ -157,11 +157,17 @@ function renderVideo(scenePlanPath, outputPath) {
     throw new Error('Scene plan has no scenes');
   }
 
-  // Parse dimensions
-  const fmt = plan.format || '1080x1920';
-  const [vidW, vidH] = fmt.split('x').map(Number);
+  // Parse dimensions — accept "1080x1920" or separate width/height fields
+  let vidW, vidH;
+  if (plan.width && plan.height) {
+    vidW = plan.width;
+    vidH = plan.height;
+  } else {
+    const fmt = plan.format || '1080x1920';
+    [vidW, vidH] = fmt.includes('x') ? fmt.split('x').map(Number) : [1080, 1920];
+  }
 
-  const audioPath = plan.audio ? path.resolve(PROJECT_ROOT, plan.audio) : null;
+  const audioPath = (plan.audio || plan.narration_file) ? path.resolve(PROJECT_ROOT, plan.audio || plan.narration_file) : null;
   const musicPath = plan.music ? path.resolve(PROJECT_ROOT, plan.music) : null;
   const musicVolume = typeof plan.music_volume === 'number' ? plan.music_volume : 0.15;
 
