@@ -279,7 +279,9 @@ async function generateApiImages(outputDir, projectDir, model = DEFAULT_MODEL, c
 
   for (const fmt of formatList) {
     const ratio = formatToRatio[fmt] || '1:1';
-    const filename = `generated_${String(imgIndex).padStart(2, '0')}_${fmt}.jpg`;
+    // Prefix with campaign task_name for uniqueness
+    const taskPrefix = path.basename(outputDir);
+    const filename = `${taskPrefix}_generated_${String(imgIndex).padStart(2, '0')}_${fmt}.jpg`;
     const outputPath = path.join(absImgsDir, filename);
     const sceneType = scenePurposes[imgIndex - 1] || defaultSceneOrder[(imgIndex - 1) % defaultSceneOrder.length];
     const sceneDesc = sceneDescriptions[imgIndex - 1] || '';
@@ -524,18 +526,23 @@ async function handleAdCreativeDesigner(job) {
   const hasStories = image_formats.includes('story_1080x1920');
   const hasCarousel = image_formats.includes('carousel_1080x1080');
 
+  // All filenames MUST start with task_name for uniqueness
+  const fnPrefix = task_name;
+
   let imageInstructions = '';
   if (hasCarousel && hasStories) {
     const carouselCount = Math.ceil(image_count * 0.6);
     const storyCount = image_count - carouselCount;
     imageInstructions = `
 Generate ${image_count} total ad images:
-- ${carouselCount} CAROUSEL slides (1080x1080) — saved as carousel_01.png, carousel_02.png, etc.
-- ${storyCount} STORIES images (1080x1920) — saved as story_01.png, story_02.png, etc.
+- ${carouselCount} CAROUSEL slides (1080x1080) — saved as ${fnPrefix}_carousel_01.png, ${fnPrefix}_carousel_02.png, etc.
+- ${storyCount} STORIES images (1080x1920) — saved as ${fnPrefix}_story_01.png, ${fnPrefix}_story_02.png, etc.
 
 For EACH image:
-1. Create a separate HTML file (carousel_01.html, story_01.html, etc.) with inline CSS
+1. Create a separate HTML file (${fnPrefix}_carousel_01.html, ${fnPrefix}_story_01.html, etc.) with inline CSS
 2. Use Playwright to screenshot it at the correct resolution (1080x1080 for carousel, 1080x1920 for stories)
+
+CRITICAL: ALL filenames MUST start with "${fnPrefix}_" prefix.
 
 Each slide/story must have a DIFFERENT visual concept and copy. The carousel should tell a progression:
 - Slide 1: Hook (attention grabber)
@@ -545,13 +552,15 @@ Each slide/story must have a DIFFERENT visual concept and copy. The carousel sho
 Stories should be vertical, bold, quick-read — one key message per story with large text.`;
   } else if (hasCarousel) {
     imageInstructions = `
-Generate ${image_count} carousel slides (1080x1080) — saved as carousel_01.png through carousel_0${image_count}.png.
+Generate ${image_count} carousel slides (1080x1080) — saved as ${fnPrefix}_carousel_01.png through ${fnPrefix}_carousel_0${image_count}.png.
 For EACH slide, create a separate HTML file and render via Playwright at 1080x1080.
+CRITICAL: ALL filenames MUST start with "${fnPrefix}_" prefix.
 Each slide must have different visual concept and copy, forming a narrative progression.`;
   } else {
     imageInstructions = `
-Generate ${image_count} story images (1080x1920) — saved as story_01.png through story_0${image_count}.png.
+Generate ${image_count} story images (1080x1920) — saved as ${fnPrefix}_story_01.png through ${fnPrefix}_story_0${image_count}.png.
 For EACH story, create a separate HTML file and render via Playwright at 1080x1920.
+CRITICAL: ALL filenames MUST start with "${fnPrefix}_" prefix.
 Each story has one bold key message with large text.`;
   }
 
@@ -809,7 +818,7 @@ async function handleVideoQuick(job) {
   const audioInstructions = hasElevenLabs ? `
 NARRATION (optional — ElevenLabs available):
 - Read narrative.json → video_narration field
-- If narration text exists, generate audio: node pipeline/generate-audio.js ${output_dir}/audio/quick_narration.mp3 "<narration_text>" rachel
+- If narration text exists, generate audio: node pipeline/generate-audio.js ${output_dir}/audio/${task_name}_quick_narration.mp3 "<narration_text>" rachel
 - Set "narration_file" in the scene plan to the generated path
 - Recommended voices: rachel (warm), bella (clear), antoni (professional)` : `
 NARRATION: ElevenLabs not configured. Generate silent video — text overlays only.`;
@@ -839,7 +848,7 @@ ${adImageList}
 ${audioInstructions}
 ${musicInstructions}
 
-STEP 3 — Create scene plan for EACH video. Save to ${output_dir}/video/video_0N_scene_plan.json:
+STEP 3 — Create scene plan for EACH video. Save to ${output_dir}/video/${task_name}_video_0N_scene_plan.json:
 {
   "titulo": "short title",
   "video_length": 15,
@@ -902,13 +911,15 @@ After saving scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
   for (let i = 1; i <= video_count; i++) {
     const idx = String(i).padStart(2, '0');
-    const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan.json`);
+    // Try prefixed name first, fallback to unprefixed for backward compat
+    let planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_video_${idx}_scene_plan.json`);
+    if (!fs.existsSync(planPath)) planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan.json`);
     if (!fs.existsSync(planPath)) {
       log(output_dir, 'video_quick', `Scene plan not found: video_${idx}, skipping.`);
       continue;
     }
 
-    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}.mp4`);
+    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_video_${idx}.mp4`);
     log(output_dir, 'video_quick', `Rendering video ${i}/${video_count}...`);
 
     try {
@@ -979,9 +990,9 @@ BACKGROUND MUSIC: No music files found in ${project_dir}/assets/music/.
 AUDIO NARRATION (ElevenLabs available):
 - Write a narration script for each video (20-30 seconds of natural speech)
 - Generate narration audio using: node pipeline/generate-audio.js <output.mp3> "<script>" [rachel|bella|antoni]
-- Save audio as: ${output_dir}/audio/video_01_narration.mp3, video_02_narration.mp3, etc.
+- Save audio as: ${output_dir}/audio/${task_name}_video_01_narration.mp3, ${task_name}_video_02_narration.mp3, etc.
 - Include the narration text in the scene plan under "narration_script"
-- Include the audio path in the scene plan under "audio": "${output_dir}/audio/video_0N_narration.mp3"
+- Include the audio path in the scene plan under "audio": "${output_dir}/audio/${task_name}_video_0N_narration.mp3"
 - Recommended voices: rachel (warm/emotional), bella (clear/friendly), antoni (professional)
 ${musicInstructions}` : `
 AUDIO: ElevenLabs not configured. Generate silent videos. Narration scripts only in scene plan.
@@ -1082,12 +1093,12 @@ ${imageSourceSection}
 STEP 3 — Video briefs:
 ${videoBriefsText}
 ${audioInstructions}
-STEP 4 — For EACH video, create a scene plan JSON and save to ${output_dir}/video/video_0N_scene_plan.json:
+STEP 4 — For EACH video, create a scene plan JSON and save to ${output_dir}/video/${task_name}_video_0N_scene_plan.json:
 {
   "titulo": "...",
   "video_length": 25,
   "format": "1080x1920",
-  "audio": "${output_dir}/audio/video_0N_narration.mp3",
+  "audio": "${output_dir}/audio/${task_name}_video_0N_narration.mp3",
   "music": "${project_dir}/assets/music/background.mp3",
   "music_volume": 0.15,
   "narration_script": "full narration text (20-30 seconds of natural speech)...",
@@ -1155,7 +1166,7 @@ After saving all scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_di
         if (!scene.image_prompt) continue; // skip scenes without explicit prompt
         if (scene.image && fs.existsSync(scene.image)) continue; // already has image
 
-        const filename = `video_${idx}_scene_${String(s + 1).padStart(2, '0')}_${scene.type || 'scene'}.jpg`;
+        const filename = `${task_name}_video_${idx}_scene_${String(s + 1).padStart(2, '0')}_${scene.type || 'scene'}.jpg`;
         const outputPath = path.join(absImgsDir, filename);
         const sceneType = scene.type || scene.id || 'solution';
         const colorHint = brand?.colors?.length ? ` Colors: ${brand.colors.slice(0, 2).join(', ')}.` : '';
@@ -1281,7 +1292,7 @@ For each scene plan:
 3. Use the Read tool to view each image listed in the scenes
 4. Read ${projectDir}/knowledge/brand_identity.md for brand mood and visual style
 5. Produce the enriched scene plan with motion, text_layout and transition_out per scene
-6. Save as video_0N_scene_plan_motion.json in the same folder
+6. Save as ${task_name}_video_0N_scene_plan_motion.json in the same folder
 
 After saving all files, print exactly: [MOTION_PLAN_DONE] ${outputDir}`;
 
@@ -1300,6 +1311,16 @@ async function handleVideoPro(job) {
   } = job.data;
   const { source: image_source, folder: imageFolder } = resolveImageSource(rawImageSource, image_folder);
   const absVideoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+
+  // Helper: prefixed video filename with backward-compat fallback for reading
+  const vf = (idx, suffix) => `${task_name}_video_${idx}${suffix}`;
+  const vfFind = (idx, suffix) => {
+    const prefixed = path.resolve(PROJECT_ROOT, output_dir, 'video', vf(idx, suffix));
+    if (fs.existsSync(prefixed)) return prefixed;
+    const legacy = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}${suffix}`);
+    if (fs.existsSync(legacy)) return legacy;
+    return prefixed;
+  };
   fs.mkdirSync(absVideoDir, { recursive: true });
 
   const lang = language || 'en';
@@ -1336,7 +1357,7 @@ BACKGROUND MUSIC: No music files found. Set "music": null in the scene plan.
 AUDIO NARRATION (ElevenLabs available):
 - Write a narration script (50-60 seconds of natural speech for 60s videos)
 - Generate narration: node pipeline/generate-audio.js <output.mp3> "<script>" [rachel|bella|antoni]
-- Save as: ${output_dir}/audio/video_0N_narration.mp3
+- Save as: ${output_dir}/audio/${task_name}_video_0N_narration.mp3
 - Recommended voices: rachel (warm/emotional), bella (clear/friendly), antoni (professional)
 ${musicInstructions}` : `
 AUDIO: ElevenLabs not configured. Generate silent videos. Narration scripts only.
@@ -1451,7 +1472,7 @@ CRITICAL RULES (enforced — plan will be rejected if violated):
 - Text overlay COMPLEMENTS narration, never repeats it
 - Sum of all durations must equal video_length (tolerance ±2s)
 
-Save each plan to: ${output_dir}/video/video_0N_scene_plan_motion.json
+Save each plan to: ${output_dir}/video/${task_name}_video_0N_scene_plan_motion.json
 
 The JSON schema is defined in SKILL.md — follow it exactly.
 
@@ -1468,7 +1489,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
   log(output_dir, 'video_pro', 'Rendering draft video(s) with placeholder backgrounds...');
   for (let i = 1; i <= video_count; i++) {
     const idx = String(i).padStart(2, '0');
-    const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan_motion.json`);
+    const planPath = vfFind(idx, '_scene_plan_motion.json');
     if (!fs.existsSync(planPath)) continue;
 
     // Mark as draft — create temp plan with solid color backgrounds
@@ -1476,21 +1497,21 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
       const plan = JSON.parse(fs.readFileSync(planPath, 'utf-8'));
       const draftPlan = JSON.parse(JSON.stringify(plan));
       const brandColors = ['#1a1a2e', '#16213e', '#0f3460', '#533483', '#e94560'];
-      draftPlan.scenes.forEach((scene, idx) => {
+      draftPlan.scenes.forEach((scene, si) => {
         if (!scene.image || !fs.existsSync(scene.image)) {
           scene.image = null;
-          scene.background_color = brandColors[idx % brandColors.length];
+          scene.background_color = brandColors[si % brandColors.length];
         }
       });
-      const draftPlanPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_draft.json`);
+      const draftPlanPath = path.resolve(PROJECT_ROOT, output_dir, 'video', vf(idx, '_draft.json'));
       fs.writeFileSync(draftPlanPath, JSON.stringify(draftPlan, null, 2));
 
-      const draftOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_draft.mp4`);
+      const draftOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', vf(idx, '_draft.mp4'));
       try {
         execFileSync('node', [
           path.resolve(PROJECT_ROOT, 'pipeline/render-video-ffmpeg.js'),
-          `${output_dir}/video/video_${idx}_draft.json`,
-          `${output_dir}/video/video_${idx}_draft.mp4`,
+          `${output_dir}/video/${vf(idx, '_draft.json')}`,
+          `${output_dir}/video/${vf(idx, '_draft.mp4')}`,
         ], { cwd: PROJECT_ROOT, stdio: 'pipe', timeout: 300000 });
         log(output_dir, 'video_pro', `Draft ${idx} rendered: ${draftOutput}`);
         process.stdout.write(`[STAGE3_DRAFT_READY] ${output_dir} ${draftOutput}\n`);
@@ -1540,7 +1561,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
           continue;
         }
 
-        const filename = `video_${idx}_img_${String(promptMap.size + 1).padStart(2, '0')}.jpg`;
+        const filename = `${task_name}_video_${idx}_img_${String(promptMap.size + 1).padStart(2, '0')}.jpg`;
         const outputPath = path.join(absImgsDir, filename);
         const sceneType = scene.type || scene.id || 'solution';
         const colorHint = brand?.colors?.length ? ` Colors: ${brand.colors.slice(0, 2).join(', ')}.` : '';
@@ -1649,9 +1670,9 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
   for (let i = 1; i <= video_count; i++) {
     const idx = String(i).padStart(2, '0');
-    const videoOutput = path.resolve(PROJECT_ROOT, `${output_dir}/video/video_${idx}.mp4`);
-    const planToRender = `${output_dir}/video/video_${idx}_scene_plan_motion.json`;
-    const absScenePlan = path.resolve(PROJECT_ROOT, planToRender);
+    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', vf(idx, '.mp4'));
+    const absScenePlan = vfFind(idx, '_scene_plan_motion.json');
+    const planToRender = path.relative(PROJECT_ROOT, absScenePlan);
 
     if (!fs.existsSync(absScenePlan)) {
       log(output_dir, 'video_pro', `Scene plan not found for video ${i}, skipping: ${absScenePlan}`);
@@ -1663,7 +1684,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
       execFileSync('node', [
         path.resolve(PROJECT_ROOT, 'pipeline/render-video-ffmpeg.js'),
         planToRender,
-        `${output_dir}/video/video_${idx}.mp4`,
+        `${output_dir}/video/${vf(idx, '.mp4')}`,
       ], {
         cwd: PROJECT_ROOT,
         stdio: 'pipe',
