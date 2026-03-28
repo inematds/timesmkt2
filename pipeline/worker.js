@@ -867,13 +867,20 @@ async function waitForDependencies(job) {
 
   log(job.data.output_dir, job.data.agent, `Waiting for dependencies: ${deps.join(', ')}`);
 
-  const maxWait = 600000; // 10 minutes
-  const pollInterval = 5000; // 5 seconds
+  // Each dependency can take up to 30 min (e.g. video + approval flow)
+  const maxWait = 3600000; // 60 minutes
+  const pollInterval = 5000;
   const start = Date.now();
 
   while (Date.now() - start < maxWait) {
-    const completed = await queue.getCompleted();
-    const completedAgents = completed.map(j => j.data.agent);
+    // Fetch up to 1000 completed jobs — default range is only 1 which misses prior completions
+    const completed = await queue.getCompleted(0, 1000);
+    // Filter to jobs from the same campaign (same output_dir) to avoid cross-campaign collisions
+    const outputDir = job.data.output_dir;
+    const completedAgents = completed
+      .filter(j => j.data.output_dir === outputDir)
+      .map(j => j.data.agent);
+
     const allDone = deps.every(dep => completedAgents.includes(dep));
 
     if (allDone) {
@@ -882,14 +889,23 @@ async function waitForDependencies(job) {
       return;
     }
 
-    // Check if any dependency failed
-    const failed = await queue.getFailed();
-    const failedAgents = failed.map(j => j.data.agent);
+    // Check if any dependency failed (same campaign)
+    const failed = await queue.getFailed(0, 1000);
+    const failedAgents = failed
+      .filter(j => j.data.output_dir === outputDir)
+      .map(j => j.data.agent);
     const anyFailed = deps.some(dep => failedAgents.includes(dep));
 
     if (anyFailed) {
       await queue.close();
       throw new Error(`Dependency failed for ${job.data.agent}. Cannot proceed.`);
+    }
+
+    // Log progress every ~30s so the user can see it's alive
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    if (elapsed % 30 < pollInterval / 1000) {
+      const waiting = deps.filter(d => !completedAgents.includes(d));
+      log(job.data.output_dir, job.data.agent, `Still waiting for: ${waiting.join(', ')} (${elapsed}s elapsed)`);
     }
 
     await new Promise(resolve => setTimeout(resolve, pollInterval));
@@ -925,7 +941,7 @@ const worker = new Worker(
   },
   {
     connection: redisConnection,
-    concurrency: 3,
+    concurrency: 5, // one slot per agent — prevents dependency-waiting jobs from blocking others
   }
 );
 
