@@ -1080,6 +1080,7 @@ function buildPayload(taskName, opts, projectDir, today) {
     image_model: opts['img-model'] || process.env.KIE_DEFAULT_MODEL || (process.env.IMAGE_PROVIDER === 'pollinations' ? 'flux' : 'z-image'),
     use_brand_overlay: opts['brand-overlay'] !== 'false',
     campaign_brief: opts.brief || '',
+    video_mode: opts['video-pro'] ? 'pro' : 'quick',
   };
 }
 

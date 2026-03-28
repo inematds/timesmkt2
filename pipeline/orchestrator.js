@@ -47,9 +47,16 @@ const AGENTS = [
     skipFlag: 'skip_image',
   },
   {
-    name: 'video_editor_agent',
-    label: 'Video Editor Agent',
-    dependencies: ['creative_director', 'copywriter_agent'],
+    name: 'video_quick',
+    label: 'Video Quick',
+    dependencies: ['ad_creative_designer', 'copywriter_agent'],
+    skippable: true,
+    skipFlag: 'skip_video',
+  },
+  {
+    name: 'video_pro',
+    label: 'Video Pro',
+    dependencies: ['ad_creative_designer', 'copywriter_agent'],
     skippable: true,
     skipFlag: 'skip_video',
   },
@@ -116,7 +123,7 @@ const PLATFORM_AGENTS = AGENTS.filter(a => a.platformFlag).map(a => a.name);
 const STAGES = {
   stage1: ['research_agent', 'creative_director', 'copywriter_agent'],
   stage2: ['ad_creative_designer'],
-  stage3: ['video_editor_agent'],
+  stage3: ['video_quick'],  // default; swapped to ['video_pro'] when video_mode === 'pro'
   stage4: PLATFORM_AGENTS,
   stage5: ['distribution_agent'],
 };
@@ -267,7 +274,14 @@ async function enqueueStage(payload, agentNames) {
     source_folder = null,
   } = payload;
 
-  const stageAgentDefs = AGENTS.filter(a => agentNames.includes(a.name));
+  // Swap video_quick → video_pro when video_mode === 'pro'
+  let resolvedNames = agentNames;
+  if (payload.video_mode === 'pro' && agentNames.includes('video_quick')) {
+    resolvedNames = agentNames.map(a => a === 'video_quick' ? 'video_pro' : a);
+    console.log('  [video_mode=pro] Swapping video_quick → video_pro');
+  }
+
+  const stageAgentDefs = AGENTS.filter(a => resolvedNames.includes(a.name));
   const jobResults = [];
 
   for (const agent of stageAgentDefs) {

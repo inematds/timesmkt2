@@ -769,6 +769,166 @@ Design quality bar:
   return { status: 'complete', output: `${output_dir}/ads/` };
 }
 
+// ── Video Quick — slideshow simples com imagens do Designer ──────────────────
+
+async function handleVideoQuick(job) {
+  const {
+    task_name, task_date, output_dir, project_dir,
+    language, campaign_brief,
+    video_count = 1,
+  } = job.data;
+  const absVideoDir = path.resolve(PROJECT_ROOT, output_dir, 'video');
+  fs.mkdirSync(absVideoDir, { recursive: true });
+
+  const lang = language || 'en';
+  const langInstruction = lang === 'pt-BR'
+    ? 'IMPORTANT: All text overlays MUST be in Brazilian Portuguese (pt-BR).'
+    : '';
+  const briefInstruction = campaign_brief
+    ? `\nCampaign Brief: ${campaign_brief}`
+    : '';
+
+  // Discover images from ads/ (produced by Ad Creative Designer in stage 2)
+  const adsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  const adImages = fs.existsSync(adsDir)
+    ? fs.readdirSync(adsDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)).map(f => path.join(adsDir, f))
+    : [];
+  const adImageList = adImages.length > 0
+    ? adImages.map(f => `  - ${f}`).join('\n')
+    : '  (no images found in ads/)';
+
+  // Check for narration capability
+  const hasElevenLabs = !!process.env.ELEVENLABS_API_KEY;
+
+  // Check for background music
+  const musicDir = path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music');
+  const musicFiles = fs.existsSync(musicDir)
+    ? fs.readdirSync(musicDir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f)).map(f => `${project_dir}/assets/music/${f}`)
+    : [];
+
+  const audioInstructions = hasElevenLabs ? `
+NARRATION (optional — ElevenLabs available):
+- Read narrative.json → video_narration field
+- If narration text exists, generate audio: node pipeline/generate-audio.js ${output_dir}/audio/quick_narration.mp3 "<narration_text>" rachel
+- Set "narration_file" in the scene plan to the generated path
+- Recommended voices: rachel (warm), bella (clear), antoni (professional)` : `
+NARRATION: ElevenLabs not configured. Generate silent video — text overlays only.`;
+
+  const musicInstructions = musicFiles.length > 0 ? `
+BACKGROUND MUSIC (available):
+${musicFiles.map(f => `  - ${f}`).join('\n')}
+- Set "music" in scene plan, "music_volume": 0.15` : `
+BACKGROUND MUSIC: No music files found. Set "music": null.`;
+
+  const prompt = `You are the Video Quick Agent. Follow the skill defined in skills/video-quick/SKILL.md.
+
+You create SHORT, SIMPLE slideshow videos (10-20s) using the ad images already produced by the Designer.
+
+Task: Create ${video_count} quick video(s) for the "${task_name}" campaign.
+Date: ${task_date}
+${langInstruction}${briefInstruction}
+
+STEP 1 — Read inputs:
+- ${output_dir}/copy/narrative.json — campaign narrative, emotional_arc, headlines, key_phrases
+- ${output_dir}/creative/creative_brief.json — campaign angle, visual direction, approved CTAs
+- ${project_dir}/knowledge/brand_identity.md — brand colors, tone
+
+STEP 2 — Available images from Designer (use these, do NOT generate new ones):
+${adImageList}
+
+${audioInstructions}
+${musicInstructions}
+
+STEP 3 — Create scene plan for EACH video. Save to ${output_dir}/video/video_0N_scene_plan.json:
+{
+  "titulo": "short title",
+  "video_length": 15,
+  "format": "9:16",
+  "width": 1080,
+  "height": 1920,
+  "narration_file": "path or null",
+  "narration_volume": 1,
+  "music": "path or null",
+  "music_volume": 0.15,
+  "scenes": [
+    {
+      "id": "hook",
+      "type": "hook",
+      "duration": 3,
+      "image": "/absolute/path/to/carousel_01.png",
+      "image_type": "raw",
+      "text_overlay": "short impactful text from narrative",
+      "text_color": "#FFFFFF",
+      "text_position": "center",
+      "motion": { "type": "push-in", "intensity": "moderate" }
+    }
+  ]
+}
+
+RULES:
+- Use ONLY images from ads/ listed above — never generate or download new images
+- 4-6 scenes, 2-4 seconds each, totaling 10-20 seconds
+- Text overlays from narrative.json → headlines and key_phrases
+- Last scene MUST be CTA with approved CTA text from creative_brief.json
+- Each scene uses a DIFFERENT image
+- Motion: alternate between push-in, ken-burns-in, drift, breathe (never same 2x in a row)
+- Format: 9:16 (1080x1920) for Reels/Shorts/Stories
+
+After saving scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
+
+  await runClaude(prompt, 'video_quick', output_dir, 600000);
+
+  // ── Approval gate ──────────────────────────────────────────────────────────
+  const approvalPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'approved.json');
+  const rejectedPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'rejected.json');
+
+  log(output_dir, 'video_quick', '[VIDEO_APPROVAL_NEEDED] Waiting for approval (30 min timeout)...');
+  process.stdout.write(`[VIDEO_APPROVAL_NEEDED] ${output_dir}\n`);
+  fs.writeFileSync(path.resolve(PROJECT_ROOT, output_dir, 'video', 'approval_needed.json'),
+    JSON.stringify({ type: 'video', agent: 'video_quick', output_dir, ts: Date.now() }));
+
+  const approved = await waitForFile(approvalPath, 1800000);
+  if (!approved) {
+    if (fs.existsSync(rejectedPath)) {
+      log(output_dir, 'video_quick', 'User rejected. Skipping render.');
+      return { status: 'skipped', reason: 'rejected' };
+    }
+    log(output_dir, 'video_quick', 'Approval timeout. Skipping.');
+    return { status: 'skipped', reason: 'approval timeout' };
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  log(output_dir, 'video_quick', 'Rendering video(s)...');
+
+  for (let i = 1; i <= video_count; i++) {
+    const idx = String(i).padStart(2, '0');
+    const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan.json`);
+    if (!fs.existsSync(planPath)) {
+      log(output_dir, 'video_quick', `Scene plan not found: video_${idx}, skipping.`);
+      continue;
+    }
+
+    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}.mp4`);
+    log(output_dir, 'video_quick', `Rendering video ${i}/${video_count}...`);
+
+    try {
+      const renderScript = path.resolve(PROJECT_ROOT, 'pipeline', 'render-video-ffmpeg.js');
+      require('child_process').execFileSync('node', [renderScript, videoOutput, planPath], {
+        cwd: PROJECT_ROOT,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 300000,
+      });
+      log(output_dir, 'video_quick', `Video ${i} rendered: ${videoOutput}`);
+    } catch (renderErr) {
+      log(output_dir, 'video_quick', `Render failed: ${renderErr.message.slice(0, 200)}`);
+    }
+  }
+
+  return { status: 'complete', output: `${output_dir}/video/` };
+}
+
+// ── Video Ad Specialist (legacy — kept for backward compat) ──────────────────
+
 async function handleVideoAdSpecialist(job) {
   const {
     task_name, task_date, output_dir, project_dir, platform_targets,
@@ -1128,9 +1288,9 @@ After saving all files, print exactly: [MOTION_PLAN_DONE] ${outputDir}`;
   await runClaude(prompt, 'motion_director', outputDir, 300000);
 }
 
-// ── Video Editor Agent (Diretor de Edição) ──────────────────────────────────
+// ── Video Pro (Diretor de Edição — produção profissional) ─────────────────
 
-async function handleVideoEditorAgent(job) {
+async function handleVideoPro(job) {
   const {
     task_name, task_date, output_dir, project_dir, platform_targets,
     language, campaign_brief,
@@ -1300,9 +1460,49 @@ Also generate the ElevenLabs narration audio BEFORE saving the scene plan.
 IMPORTANT: ONLY generate scene plans and audio. Do NOT run render-video-ffmpeg.js.
 After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
-  await runClaude(prompt, 'video_editor_agent', output_dir, 900000);
+  await runClaude(prompt, 'video_pro', output_dir, 900000);
 
-  // ── PHASE 1.5: Generate per-scene images from image_prompt (API mode) ───────
+  // ── PHASE 1.5: Draft render (placeholders) for approval ─────────────────────
+  // Render a draft video with solid-color backgrounds (brand colors) so the user
+  // can approve the timing, narration, and structure before we generate real images.
+  log(output_dir, 'video_pro', 'Rendering draft video(s) with placeholder backgrounds...');
+  for (let i = 1; i <= video_count; i++) {
+    const idx = String(i).padStart(2, '0');
+    const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan_motion.json`);
+    if (!fs.existsSync(planPath)) continue;
+
+    // Mark as draft — create temp plan with solid color backgrounds
+    try {
+      const plan = JSON.parse(fs.readFileSync(planPath, 'utf-8'));
+      const draftPlan = JSON.parse(JSON.stringify(plan));
+      const brandColors = ['#1a1a2e', '#16213e', '#0f3460', '#533483', '#e94560'];
+      draftPlan.scenes.forEach((scene, idx) => {
+        if (!scene.image || !fs.existsSync(scene.image)) {
+          scene.image = null;
+          scene.background_color = brandColors[idx % brandColors.length];
+        }
+      });
+      const draftPlanPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_draft.json`);
+      fs.writeFileSync(draftPlanPath, JSON.stringify(draftPlan, null, 2));
+
+      const draftOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_draft.mp4`);
+      try {
+        execFileSync('node', [
+          path.resolve(PROJECT_ROOT, 'pipeline/render-video-ffmpeg.js'),
+          `${output_dir}/video/video_${idx}_draft.json`,
+          `${output_dir}/video/video_${idx}_draft.mp4`,
+        ], { cwd: PROJECT_ROOT, stdio: 'pipe', timeout: 300000 });
+        log(output_dir, 'video_pro', `Draft ${idx} rendered: ${draftOutput}`);
+        process.stdout.write(`[STAGE3_DRAFT_READY] ${output_dir} ${draftOutput}\n`);
+      } catch (draftErr) {
+        log(output_dir, 'video_pro', `Draft render failed: ${draftErr.message.slice(0, 200)}`);
+      }
+    } catch (e) {
+      log(output_dir, 'video_pro', `Draft prep failed for video ${idx}: ${e.message}`);
+    }
+  }
+
+  // ── PHASE 2: Generate real images (API mode) ───────────────────────────────
   if (image_source === 'api') {
     const jobProvider = job.data.image_provider || IMAGE_PROVIDER;
     const imageProvider = getImageProvider(jobProvider);
@@ -1310,7 +1510,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
     const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
     const useBrand = job.data.use_brand_overlay !== false;
     const brand = useBrand ? readBrandContext(project_dir) : null;
-    if (brand) log(output_dir, 'video_editor_agent', `Brand context: ${brand.brandName} | provider: ${jobProvider}`);
+    if (brand) log(output_dir, 'video_pro', `Brand context: ${brand.brandName} | provider: ${jobProvider}`);
 
     for (let i = 1; i <= video_count; i++) {
       const idx = String(i).padStart(2, '0');
@@ -1319,7 +1519,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
       let plan;
       try { plan = JSON.parse(fs.readFileSync(planPath, 'utf-8')); }
-      catch (e) { log(output_dir, 'video_editor_agent', `Could not parse scene plan ${idx}: ${e.message}`); continue; }
+      catch (e) { log(output_dir, 'video_pro', `Could not parse scene plan ${idx}: ${e.message}`); continue; }
 
       const absImgsDir = path.resolve(PROJECT_ROOT, output_dir, 'imgs');
       fs.mkdirSync(absImgsDir, { recursive: true });
@@ -1355,14 +1555,14 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
         const rawPrompt = `${scene.image_prompt}. ${mood}. vertical 9:16.${colorHint} Cinematic lighting, photorealistic. No text, no words, no watermark.`;
         const finalPrompt = rawPrompt.length > 490 ? rawPrompt.slice(0, 487) + '...' : rawPrompt;
 
-        log(output_dir, 'video_editor_agent', `Generating image ${promptMap.size + 1} for video_${idx}: ${scene.image_prompt.slice(0, 80)}`);
+        log(output_dir, 'video_pro', `Generating image ${promptMap.size + 1} for video_${idx}: ${scene.image_prompt.slice(0, 80)}`);
         try {
           await genImage(outputPath, finalPrompt, model, '9:16');
           scene.image = outputPath;
           promptMap.set(scene.image_prompt, outputPath);
           planChanged = true;
         } catch (err) {
-          log(output_dir, 'video_editor_agent', `Failed image gen: ${err.message}`);
+          log(output_dir, 'video_pro', `Failed image gen: ${err.message}`);
         }
       }
 
@@ -1374,7 +1574,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
           }
         }
         fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
-        log(output_dir, 'video_editor_agent', `Updated plan with ${promptMap.size} unique images for ${plan.scenes.length} cuts`);
+        log(output_dir, 'video_pro', `Updated plan with ${promptMap.size} unique images for ${plan.scenes.length} cuts`);
       }
     }
   }
@@ -1416,12 +1616,12 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
       if (fixes > 0) {
         fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
-        log(output_dir, 'video_editor_agent', `Auto-fixed ${fixes} rule violations in video ${idx}`);
+        log(output_dir, 'video_pro', `Auto-fixed ${fixes} rule violations in video ${idx}`);
       }
 
-      log(output_dir, 'video_editor_agent', `Video ${idx}: ${plan.scenes.length} cuts, ${plan.scenes.reduce((s, c) => s + c.duration, 0).toFixed(1)}s total`);
+      log(output_dir, 'video_pro', `Video ${idx}: ${plan.scenes.length} cuts, ${plan.scenes.reduce((s, c) => s + c.duration, 0).toFixed(1)}s total`);
     } catch (e) {
-      log(output_dir, 'video_editor_agent', `Validation error video ${idx}: ${e.message}`);
+      log(output_dir, 'video_pro', `Validation error video ${idx}: ${e.message}`);
     }
   }
 
@@ -1429,7 +1629,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
   const approvalPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'approved.json');
   const rejectedPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'rejected.json');
 
-  log(output_dir, 'video_editor_agent', '[VIDEO_APPROVAL_NEEDED] Waiting for approval (30 min timeout)...');
+  log(output_dir, 'video_pro', '[VIDEO_APPROVAL_NEEDED] Waiting for approval (30 min timeout)...');
   process.stdout.write(`[VIDEO_APPROVAL_NEEDED] ${output_dir}\n`);
   fs.writeFileSync(path.resolve(PROJECT_ROOT, output_dir, 'video', 'approval_needed.json'),
     JSON.stringify({ type: 'video_editor', output_dir, ts: Date.now() }));
@@ -1437,15 +1637,15 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
   const approved = await waitForFile(approvalPath, 1800000);
   if (!approved) {
     if (fs.existsSync(rejectedPath)) {
-      log(output_dir, 'video_editor_agent', 'User rejected the video plan. Skipping render.');
+      log(output_dir, 'video_pro', 'User rejected the video plan. Skipping render.');
       return { status: 'skipped', reason: 'rejected by user' };
     }
-    log(output_dir, 'video_editor_agent', 'Approval timeout. Skipping video render.');
+    log(output_dir, 'video_pro', 'Approval timeout. Skipping video render.');
     return { status: 'skipped', reason: 'approval timeout' };
   }
 
   // ── PHASE 4: Render (no motion_director needed — plan already enriched) ────
-  log(output_dir, 'video_editor_agent', 'Starting video render...');
+  log(output_dir, 'video_pro', 'Starting video render...');
 
   for (let i = 1; i <= video_count; i++) {
     const idx = String(i).padStart(2, '0');
@@ -1454,11 +1654,11 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
     const absScenePlan = path.resolve(PROJECT_ROOT, planToRender);
 
     if (!fs.existsSync(absScenePlan)) {
-      log(output_dir, 'video_editor_agent', `Scene plan not found for video ${i}, skipping: ${absScenePlan}`);
+      log(output_dir, 'video_pro', `Scene plan not found for video ${i}, skipping: ${absScenePlan}`);
       continue;
     }
 
-    log(output_dir, 'video_editor_agent', `Rendering video ${i}/${video_count}...`);
+    log(output_dir, 'video_pro', `Rendering video ${i}/${video_count}...`);
     try {
       execFileSync('node', [
         path.resolve(PROJECT_ROOT, 'pipeline/render-video-ffmpeg.js'),
@@ -1469,9 +1669,9 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
         stdio: 'pipe',
         timeout: 300000,
       });
-      log(output_dir, 'video_editor_agent', `Video ${i} rendered: ${videoOutput}`);
+      log(output_dir, 'video_pro', `Video ${i} rendered: ${videoOutput}`);
     } catch (renderErr) {
-      log(output_dir, 'video_editor_agent', `ffmpeg render ${i} failed: ${renderErr.message.slice(0, 200)}`);
+      log(output_dir, 'video_pro', `ffmpeg render ${i} failed: ${renderErr.message.slice(0, 200)}`);
     }
   }
 
@@ -2111,8 +2311,9 @@ const HANDLERS = {
   creative_director: handleCreativeDirector,
   copywriter_agent: handleCopywriterAgent,
   ad_creative_designer: handleAdCreativeDesigner,
-  video_ad_specialist: handleVideoAdSpecialist,
-  video_editor_agent: handleVideoEditorAgent,
+  video_quick: handleVideoQuick,
+  video_pro: handleVideoPro,
+  video_ad_specialist: handleVideoAdSpecialist,  // legacy compat
   platform_instagram: handlePlatformInstagram,
   platform_youtube: handlePlatformYouTube,
   platform_tiktok: handlePlatformTikTok,
