@@ -1,6 +1,6 @@
 ## Project Overview
 
-**ATMKT v3.1.0** — AI-powered Social Media Content Automation System built with Claude Code inside the Antigravity IDE.
+**ATMKT v3.3.1** — AI-powered Social Media Content Automation System built with Claude Code inside the Antigravity IDE.
 
 ---
 
@@ -14,13 +14,16 @@
 | `RECURSO` | Novo agente, nova aprovação, novo provider, nova feature |
 | `BUG` | Correção de bug, ajuste de comportamento, fix de prompt |
 
+**Regra crítica:** O contador `BUG` **acumula e nunca zera quando RECURSO incrementa**. Só zera quando MAJOR incrementa.
+
 **Exemplos:**
 - `v3.0.0` → versão base com novo fluxo de 4 aprovações + Diretor de Criação
-- `v3.1.0` → adição do Agente Revisor automático
-- `v3.1.1` → fix no gate de imagens do worker + regra de imagens sem texto via API
-- `v4.0.0` → mudança de arquitetura (ex: substituir BullMQ por outro sistema)
+- `v3.1.0` → adição do Agente Revisor automático (RECURSO+1, BUG não zera → mantém 0)
+- `v3.1.1` → fix no gate de imagens (BUG+1)
+- `v3.2.1` → Motion Director + brand visual context (RECURSO+1, BUG acumulado = 1, não zerou)
+- `v4.0.0` → mudança de arquitetura (MAJOR+1, tudo zera)
 
-**Versão atual:** `ATMKT v3.1.1`
+**Versão atual:** `ATMKT v3.3.1`
 
 Sempre atualizar a versão no topo deste arquivo e no `package.json` ao fazer uma alteração relevante.
 

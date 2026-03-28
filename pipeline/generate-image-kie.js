@@ -102,75 +102,51 @@ function readBrandContext(projectDir) {
 /**
  * Builds a rich, brand-aware image generation prompt.
  *
- * @param {string} brief        - campaign brief
- * @param {object|null} brand   - brand context from readBrandContext()
- * @param {string} format       - e.g. 'carousel_1080x1080', 'story_1080x1920'
- * @param {number} index        - 1-based scene index
- * @param {number} total        - total number of images
- * @param {string} sceneType    - 'hook'|'tension'|'solution'|'social_proof'|'cta'
+ * @param {string} brief           - campaign brief
+ * @param {object|null} brand      - brand context from readBrandContext()
+ * @param {string} format          - e.g. 'carousel_1080x1080', 'story_1080x1920'
+ * @param {number} index           - 1-based scene index
+ * @param {number} total           - total number of images
+ * @param {string} sceneType       - 'hook'|'tension'|'solution'|'social_proof'|'cta'
+ * @param {string} sceneDescription - optional per-scene visual description (overrides brand.visualContext[0])
  */
-function buildImagePrompt(brief, brand, format, index, total, sceneType = '') {
+function buildImagePrompt(brief, brand, format, index, total, sceneType = '', sceneDescription = '') {
   const isStory = format.includes('1920') || format.includes('9:16');
-  const orientation = isStory ? 'vertical portrait 9:16' : 'square 1:1';
+  const orientation = isStory ? 'vertical 9:16' : 'square 1:1';
 
-  // Scene purpose
-  const purposeMap = {
-    hook:         'dramatic opening hook — high contrast, strong visual tension, immediate impact',
-    tension:      'emotional tension — aspiration, challenge, the desire to grow',
-    solution:     'transformation and solution — empowerment, clarity, positive energy',
-    social_proof: 'community and credibility — people achieving, belonging, results',
-    cta:          'clear call to action — inviting, optimistic, forward momentum',
+  const moodMap = {
+    hook:         'dramatic tension, high contrast, strong impact',
+    tension:      'emotional challenge, aspiration, desire to change',
+    solution:     'transformation, empowerment, positive energy',
+    social_proof: 'community, people achieving, belonging',
+    cta:          'optimistic, inviting, forward momentum',
   };
-  const sceneFirst  = index === 1;
-  const sceneLast   = index === total;
-  const purposeHint = purposeMap[sceneType] ||
-    (sceneFirst ? purposeMap.hook : sceneLast ? purposeMap.cta : purposeMap.solution);
+  const sceneFirst = index === 1;
+  const sceneLast  = index === total;
+  const mood = moodMap[sceneType] ||
+    (sceneFirst ? moodMap.hook : sceneLast ? moodMap.cta : moodMap.solution);
 
-  // Brand visual identity
-  const brandParts = [];
-  if (brand) {
-    if (brand.brandName) brandParts.push(`brand: ${brand.brandName}`);
-    if (brand.colors?.length) brandParts.push(`color palette: ${brand.colors.join(', ')}`);
-    if (brand.styleKeywords?.length) brandParts.push(brand.styleKeywords.join(', '));
-  }
+  // Use scene-specific description when provided (synchronized with narration/script)
+  // Falls back to brand's first visualContext line, then generic
+  const visualScene = sceneDescription || brand?.visualContext?.[0] || 'professional cinematic scene';
 
-  // Extract thematic keywords from brief (nouns and adjectives, max 8)
-  const themeKeywords = extractThemeKeywords(brief);
+  // First 2 brand colors only
+  const colorHint = brand?.colors?.length
+    ? `Colors: ${brand.colors.slice(0, 2).join(', ')}.`
+    : '';
 
-  // Build the prompt parts
   const parts = [
-    // Subject + context
-    themeKeywords.length
-      ? `Professional marketing photograph. Theme: ${themeKeywords.join(', ')}.`
-      : 'Professional marketing photograph.',
-
-    // Scene purpose
-    `Scene purpose: ${purposeHint}.`,
-
-    // Brand visual world — what subjects/environments the brand lives in
-    brand?.visualContext?.length
-      ? `Brand visual world: ${brand.visualContext.slice(0, 4).join(' ')}`
-      : '',
-
-    // Brand style identity
-    brandParts.length
-      ? `Visual style: ${brandParts.join('; ')}.`
-      : '',
-
-    // Composition
-    `Format: ${orientation}, cinematic composition, rule of thirds.`,
-
-    // Lighting
-    'Dramatic cinematic lighting, high contrast, rich shadows and highlights.',
-
-    // Quality
-    'Photorealistic, 8K quality, sharp focus on subject, bokeh background.',
-
-    // Restrictions LAST — z-image-turbo: no CFG, restrictions work better at end of prompt
-    'Clean image, no text overlay, no watermark, no logo, no words, no typography, no letters or numbers visible, text-free, label-free, pure visual composition.',
+    visualScene + '.',
+    mood + '.',
+    orientation + '.',
+    colorHint,
+    'Cinematic lighting, photorealistic.',
+    'No text, no words, no watermark, no logo.',
   ];
 
-  return parts.filter(Boolean).join(' ');
+  const prompt = parts.filter(Boolean).join(' ');
+  // KIE z-image limit: 500 chars
+  return prompt.length > 490 ? prompt.slice(0, 487) + '...' : prompt;
 }
 
 /**

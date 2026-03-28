@@ -73,9 +73,13 @@ Use this standard short-form structure:
 For each scene, define:
 
 - `time` — start–end in seconds
-- `type` — hook / product_showcase / benefit / cta
+- `type` — hook / tension / solution / social_proof / cta
 - `visual` — shot description (what the camera sees)
-- `text_overlay` — on-screen copy (short, punchy, brand-voice)
+- `narration` — the spoken line for this scene (synchronized with the image)
+- `text_overlay` — on-screen copy (short, max 6 words, punchy, brand-voice — complements narration, does not repeat it)
+- `image_prompt` — (when image_source=api) concise English visual description of exactly what should appear in the image for this scene, derived from the narration and scene purpose. Max 200 chars. No text in description.
+
+**Synchronization rule:** the `image_prompt` must describe what the viewer will SEE while hearing the `narration`. They must reinforce the same message — not be disconnected.
 
 ---
 

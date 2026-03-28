@@ -103,6 +103,16 @@ function clearPendingVideoApproval(chatId) {
   s.pendingVideoApproval = null;
 }
 
+function setPendingImageError(chatId, data) {
+  const s = get(chatId);
+  s.pendingImageError = data;
+}
+
+function clearPendingImageError(chatId) {
+  const s = get(chatId);
+  s.pendingImageError = null;
+}
+
 function setPendingCampaign(chatId, payload) {
   const s = get(chatId);
   s.pendingCampaign = payload;
@@ -156,6 +166,7 @@ module.exports = {
   setPhotoTarget,
   setPendingCampaign, clearPendingCampaign,
   setPendingVideoApproval, clearPendingVideoApproval,
+  setPendingImageError, clearPendingImageError,
   setCampaignV3, getCampaignV3, updateCampaignV3Stage, setCampaignV3Stage,
   setPendingStageApproval, clearPendingStageApproval, clearCampaignV3,
   DEFAULT_PROJECT,

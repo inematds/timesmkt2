@@ -11,7 +11,9 @@
  * {
  *   "video_length": 20,
  *   "format": "1080x1920",
- *   "audio": "path/to/narration.mp3",        // optional
+ *   "audio": "path/to/narration.mp3",        // optional — narration voice
+ *   "music": "path/to/background.mp3",      // optional — background music (mixed under narration)
+ *   "music_volume": 0.15,                   // optional — background music volume (0.0–1.0, default 0.15)
  *   "scenes": [
  *     {
  *       "duration": 4,
@@ -72,6 +74,74 @@ function distributeSceneDurations(scenes, totalAudioDuration, holdLastSecs = 3) 
   });
 }
 
+/**
+ * Generates an ASS subtitle file for professional text overlay.
+ * Uses Montserrat Black via libass — full UTF-8 support, word wrap, outline.
+ */
+function generateASS(scenes, sceneDurations, vidW, vidH) {
+  const FONT    = 'Montserrat Black';
+  const OUTLINE = 3;
+
+  function tc(secs) {
+    const h  = Math.floor(secs / 3600);
+    const m  = Math.floor((secs % 3600) / 60);
+    const s  = Math.floor(secs % 60);
+    const cs = Math.round((secs % 1) * 100);
+    return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(cs).padStart(2,'0')}`;
+  }
+
+  // ASS alignment: 2=bottom-center, 5=middle-center, 8=top-center
+  const anMap = { bottom: 2, center: 5, top: 8 };
+  // ASS colour: &HAABBGGRR (alpha inverted: 00=opaque, FF=transparent)
+  const alphaHex = (opacity) => Math.round((1 - opacity) * 255).toString(16).padStart(2,'0').toUpperCase();
+
+  const dialogues = [];
+  let cumTime = 0;
+
+  for (let i = 0; i < scenes.length; i++) {
+    const scene      = scenes[i];
+    const dur        = sceneDurations[i];
+    const text       = (scene.text_overlay || '').trim();
+    const tl         = scene.text_layout || {};
+    const fontSize   = tl.font_size || 80;
+    const position   = tl.position  || 'bottom';
+    const safeMargin = tl.safe_margin || 120;
+    const bgOpacity  = tl.background_opacity ?? 0.60;
+    const bgType     = tl.background || 'gradient';
+
+    if (text) {
+      const an      = anMap[position] || 2;
+      const bgAlpha = bgType === 'none' ? 'FF' : alphaHex(bgOpacity);
+      // Per-line override tags: font size, alignment, fade in 400ms/out 200ms
+      const tags    = `{\\an${an}\\fs${fontSize}\\fad(400,200)}`;
+      // MarginV drives the distance from the edge for top/bottom alignment
+      const marginV = safeMargin;
+      dialogues.push(
+        `Dialogue: 0,${tc(cumTime)},${tc(cumTime + dur - 0.05)},Default,,40,40,${marginV},,${tags}${text}`
+      );
+    }
+
+    cumTime += dur;
+  }
+
+  return [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    `PlayResX: ${vidW}`,
+    `PlayResY: ${vidH}`,
+    'WrapStyle: 0',       // smart wrap
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    // BorderStyle 1 = outline+shadow; PrimaryColour=white; OutlineColour=black; Shadow=0
+    `Style: Default,${FONT},80,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,${OUTLINE},0,2,40,40,60,1`,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+    ...dialogues,
+  ].join('\n');
+}
+
 function renderVideo(scenePlanPath, outputPath) {
   const absScenePlan = path.resolve(PROJECT_ROOT, scenePlanPath);
   const absOutput = path.resolve(PROJECT_ROOT, outputPath);
@@ -92,6 +162,8 @@ function renderVideo(scenePlanPath, outputPath) {
   const [vidW, vidH] = fmt.split('x').map(Number);
 
   const audioPath = plan.audio ? path.resolve(PROJECT_ROOT, plan.audio) : null;
+  const musicPath = plan.music ? path.resolve(PROJECT_ROOT, plan.music) : null;
+  const musicVolume = typeof plan.music_volume === 'number' ? plan.music_volume : 0.15;
 
   // Determine scene durations based on audio length
   let sceneDurations;
@@ -128,82 +200,54 @@ function renderVideo(scenePlanPath, outputPath) {
       const segOut = path.join(tmpDir, `seg_${String(i).padStart(2, '0')}.mp4`);
       segmentFiles.push(segOut);
 
-      // Build ffmpeg filter for text overlay
-      const textOverlay = scene.text_overlay || '';
-      const escapedText = textOverlay
-        .replace(/'/g, "'\\''")
-        .replace(/:/g, '\\:')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]');
-
-      // ── Motion config — from motion director or fallback defaults ────────────
+      // ── Motion config ─────────────────────────────────────────────────────────
       const motionConfig = scene.motion || {};
-      const motionTypes = ['zoom_in', 'zoom_out', 'pan_right', 'pan_left'];
-      const motionType = motionConfig.type || motionTypes[i % motionTypes.length];
-      const zoomStart = motionConfig.zoom_start ?? 1.0;
-      const zoomEnd   = motionConfig.zoom_end   ?? 1.08;
+      const motionTypes  = ['zoom_in', 'zoom_out', 'pan_right', 'pan_left'];
+      const motionType   = motionConfig.type || motionTypes[i % motionTypes.length];
+      const zoomStart    = motionConfig.zoom_start ?? 1.0;
+      const zoomEnd      = motionConfig.zoom_end   ?? 1.08;
 
-      // ── Text layout config — from motion director or fallback defaults ────────
-      const textLayout = scene.text_layout || {};
+      // ── Text layout config (used for background only — text rendered via ASS) ─
+      const textOverlay  = scene.text_overlay || '';
+      const textLayout   = scene.text_layout || {};
       const fontSize     = textLayout.font_size         || (textOverlay.length > 60 ? 52 : textOverlay.length > 30 ? 64 : 80);
       const textPosition = textLayout.position          || 'bottom';
       const safeMargin   = textLayout.safe_margin       || 120;
       const bgType       = textLayout.background        || 'gradient';
       const bgOpacity    = textLayout.background_opacity ?? 0.60;
-      const maxWidthPct  = textLayout.max_width_pct     || 85;
 
       // ── image_type ────────────────────────────────────────────────────────────
       const imageType = scene.image_type || 'raw';
-      const isBanner = imageType === 'banner';
+      const isBanner  = imageType === 'banner';
 
-      const fps = 30;
+      const fps         = 30;
       const totalFrames = Math.round(duration * fps);
 
       // ── Ken Burns zoompan filter ──────────────────────────────────────────────
       let kbFilter = '';
       if (motionType === 'zoom_in') {
         kbFilter = `zoompan=z='${zoomStart}+(${zoomEnd}-${zoomStart})*on/${totalFrames}':` +
-          `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-          `d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
+          `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
       } else if (motionType === 'zoom_out') {
         kbFilter = `zoompan=z='${zoomEnd}-(${zoomEnd}-${zoomStart})*on/${totalFrames}':` +
-          `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-          `d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
+          `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
       } else if (motionType === 'pan_right') {
-        kbFilter = `zoompan=z='${zoomEnd}':` +
-          `x='(iw-(iw/zoom))*on/${totalFrames}':y='ih/2-(ih/zoom/2)':` +
-          `d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
+        kbFilter = `zoompan=z='${zoomEnd}':x='(iw-(iw/zoom))*on/${totalFrames}':` +
+          `y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
       } else if (motionType === 'pan_left') {
-        kbFilter = `zoompan=z='${zoomEnd}':` +
-          `x='(iw-(iw/zoom))*(1-on/${totalFrames})':y='ih/2-(ih/zoom/2)':` +
-          `d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
+        kbFilter = `zoompan=z='${zoomEnd}':x='(iw-(iw/zoom))*(1-on/${totalFrames})':` +
+          `y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
       } else {
-        // static — minimal zoom to avoid pure freeze
-        kbFilter = `zoompan=z='${zoomStart}':` +
-          `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-          `d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
+        kbFilter = `zoompan=z='${zoomStart}':x='iw/2-(iw/zoom/2)':` +
+          `y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${vidW}x${vidH}:fps=${fps}`;
       }
 
       // ── Fade in/out ───────────────────────────────────────────────────────────
-      const fadeDur = Math.min(0.4, duration / 4);
-      const fadeOut = duration - fadeDur;
+      const fadeDur   = Math.min(0.4, duration / 4);
+      const fadeOut   = duration - fadeDur;
       const fadeFilter = `fade=t=in:st=0:d=${fadeDur},fade=t=out:st=${fadeOut.toFixed(2)}:d=${fadeDur}`;
 
-      // ── Text fade-in alpha ────────────────────────────────────────────────────
-      const textFadeFrames = Math.round(0.5 * fps);
-      const alphaExpr = `if(lt(n,${textFadeFrames}),n/${textFadeFrames},1)`;
-
-      // ── Text Y position (drawtext supports expressions) ───────────────────────
-      let textY;
-      if (textPosition === 'top') {
-        textY = String(safeMargin);
-      } else if (textPosition === 'center') {
-        textY = `(h/2-${Math.round(fontSize / 2)})`;
-      } else {
-        // bottom — safe margin from edge
-        textY = `h-${safeMargin + fontSize}`;
-      }
-
+      // ── Background band/box (text rendered via ASS subtitles, not drawtext) ───
       let vfParts = [];
 
       if (imgSrc && fs.existsSync(imgSrc)) {
@@ -222,42 +266,26 @@ function renderVideo(scenePlanPath, outputPath) {
 
       vfParts.push(fadeFilter);
 
-      if (escapedText) {
-        // ── Background behind text ──────────────────────────────────────────────
+      // Background band behind where the text will appear (estimated height)
+      if (textOverlay && bgType !== 'none') {
+        const estLines  = Math.ceil(textOverlay.length / 18) + (textOverlay.includes('\n') ? 1 : 0);
+        const bandH     = Math.round(fontSize * 1.4 * estLines + fontSize * 0.8);
         if (bgType === 'dark_box') {
-          // Caixa semi-transparente atrás do texto
-          const boxW = Math.round(vidW * maxWidthPct / 100);
-          const boxH = Math.round(fontSize * 1.8);
+          const boxW = Math.round(vidW * 0.85);
           const boxX = Math.round((vidW - boxW) / 2);
           let boxY;
-          if (textPosition === 'top') {
-            boxY = Math.max(0, safeMargin - Math.round(fontSize * 0.4));
-          } else if (textPosition === 'center') {
-            boxY = Math.round(vidH / 2) - Math.round(fontSize * 0.9);
-          } else {
-            boxY = vidH - safeMargin - Math.round(fontSize * 1.5);
-          }
-          vfParts.push(
-            `drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=black@${bgOpacity}:t=fill`
-          );
-        } else if (bgType === 'gradient' || bgType !== 'none') {
-          // Gradiente escuro cobrindo a região relevante da tela
-          if (textPosition === 'top') {
-            vfParts.push(`drawbox=x=0:y=0:w=iw:h=ih*0.40:color=black@${bgOpacity}:t=fill`);
-          } else {
-            vfParts.push(`drawbox=x=0:y=ih*0.55:w=iw:h=ih*0.45:color=black@${bgOpacity}:t=fill`);
-          }
+          if (textPosition === 'top')         boxY = safeMargin - Math.round(fontSize * 0.3);
+          else if (textPosition === 'center') boxY = Math.round((vidH - bandH) / 2);
+          else                                boxY = vidH - safeMargin - bandH;
+          vfParts.push(`drawbox=x=${boxX}:y=${Math.max(0,boxY)}:w=${boxW}:h=${bandH}:color=black@${bgOpacity}:t=fill`);
+        } else {
+          // gradient: full-width band
+          let bandY;
+          if (textPosition === 'top')         bandY = 0;
+          else if (textPosition === 'center') bandY = Math.round((vidH - bandH) / 2) - Math.round(fontSize * 0.5);
+          else                                bandY = vidH - bandH - Math.round(fontSize * 0.3);
+          vfParts.push(`drawbox=x=0:y=${Math.max(0,bandY)}:w=iw:h=${bandH + Math.round(fontSize * 0.5)}:color=black@${bgOpacity}:t=fill`);
         }
-        // bgType === 'none' → sem fundo, só shadow no texto
-
-        // ── drawtext ──────────────────────────────────────────────────────────────
-        vfParts.push(
-          `drawtext=text='${escapedText}':fontsize=${fontSize}:` +
-          `fontcolor=white@1:alpha='${alphaExpr}':` +
-          `x=(w-text_w)/2:y=${textY}:` +
-          `fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:` +
-          `shadowcolor=black@0.9:shadowx=3:shadowy=3`
-        );
       }
 
       const vf = vfParts.join(',');
@@ -311,19 +339,47 @@ function renderVideo(scenePlanPath, outputPath) {
       segmentFiles.map(f => `file '${f}'`).join('\n')
     );
 
+    const concatVideo = path.join(tmpDir, 'concat.mp4');
+    execFileSync('ffmpeg', [
+      '-f', 'concat', '-safe', '0', '-i', concatList,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30',
+      '-y', concatVideo,
+    ], { stdio: 'pipe' });
+
+    // Step 2.5: Apply ASS subtitles (Montserrat Black, full UTF-8, libass)
+    const assFile   = path.join(tmpDir, 'subs.ass');
+    const assContent = generateASS(scenes, sceneDurations, vidW, vidH);
+    fs.writeFileSync(assFile, assContent, 'utf-8');
+
     const silentVideo = path.join(tmpDir, 'silent.mp4');
     execFileSync('ffmpeg', [
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', concatList,
-      '-c:v', 'libx264',
-      '-pix_fmt', 'yuv420p',
-      '-r', '30',
+      '-i', concatVideo,
+      '-vf', `ass='${assFile}'`,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30',
       '-y', silentVideo,
     ], { stdio: 'pipe' });
 
-    // Step 3: Add audio if available
-    if (audioPath && fs.existsSync(audioPath)) {
+    // Step 3: Add audio — narration and/or background music
+    const hasNarration = audioPath && fs.existsSync(audioPath);
+    const hasMusic     = musicPath && fs.existsSync(musicPath);
+
+    if (hasNarration && hasMusic) {
+      // Mix narration (full volume) + background music (lower volume) via amix
+      execFileSync('ffmpeg', [
+        '-i', silentVideo,
+        '-i', audioPath,
+        '-i', musicPath,
+        '-filter_complex',
+          `[1:a]volume=1.0[narr];[2:a]volume=${musicVolume}[mus];[narr][mus]amix=inputs=2:duration=shortest[aout]`,
+        '-map', '0:v',
+        '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
+        '-y', absOutput,
+      ], { stdio: 'pipe' });
+      console.log(`Audio: narration + music (vol ${musicVolume})`);
+    } else if (hasNarration) {
       execFileSync('ffmpeg', [
         '-i', silentVideo,
         '-i', audioPath,
@@ -334,6 +390,22 @@ function renderVideo(scenePlanPath, outputPath) {
         '-shortest',
         '-y', absOutput,
       ], { stdio: 'pipe' });
+      console.log('Audio: narration only');
+    } else if (hasMusic) {
+      // Music only — loop/trim to video length
+      execFileSync('ffmpeg', [
+        '-i', silentVideo,
+        '-stream_loop', '-1',
+        '-i', musicPath,
+        '-filter_complex', `[1:a]volume=${musicVolume}[aout]`,
+        '-map', '0:v',
+        '-map', '[aout]',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
+        '-y', absOutput,
+      ], { stdio: 'pipe' });
+      console.log(`Audio: music only (vol ${musicVolume})`);
     } else {
       // Add silent audio track so the file is valid
       execFileSync('ffmpeg', [
@@ -345,6 +417,7 @@ function renderVideo(scenePlanPath, outputPath) {
         '-shortest',
         '-y', absOutput,
       ], { stdio: 'pipe' });
+      console.log('Audio: silent');
     }
 
     console.log(`✅ Video rendered: ${absOutput}`);

@@ -10,7 +10,7 @@
 
 const { Worker } = require('bullmq');
 const { redisConnection } = require('./redis');
-const { QUEUE_NAME } = require('./queues');
+const { QUEUE_NAME, pipelineQueue } = require('./queues');
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -151,8 +151,9 @@ function assetPaths(assets) {
  * @param {string} brief       - campaign brief
  * @param {boolean} useBrandOverlay - whether to include brand visual identity in prompt
  * @param {string[]} scenePurposes  - optional array of scene types per image
+ * @param {string[]} sceneDescriptions - optional per-scene visual descriptions (synchronized with script/narration)
  */
-async function generateApiImages(outputDir, projectDir, model = DEFAULT_MODEL, count = 5, formats = ['carousel_1080x1080'], brief = '', useBrandOverlay = true, scenePurposes = []) {
+async function generateApiImages(outputDir, projectDir, model = DEFAULT_MODEL, count = 5, formats = ['carousel_1080x1080'], brief = '', useBrandOverlay = true, scenePurposes = [], sceneDescriptions = []) {
   const absImgsDir = path.resolve(PROJECT_ROOT, outputDir, 'imgs');
   fs.mkdirSync(absImgsDir, { recursive: true });
 
@@ -181,11 +182,12 @@ async function generateApiImages(outputDir, projectDir, model = DEFAULT_MODEL, c
     const filename = `generated_${String(imgIndex).padStart(2, '0')}_${fmt}.jpg`;
     const outputPath = path.join(absImgsDir, filename);
     const sceneType = scenePurposes[imgIndex - 1] || defaultSceneOrder[(imgIndex - 1) % defaultSceneOrder.length];
+    const sceneDesc = sceneDescriptions[imgIndex - 1] || '';
 
     if (fs.existsSync(outputPath)) {
       log(outputDir, 'api_image_gen', `Already exists, skipping: ${filename}`);
     } else {
-      const prompt = buildImagePrompt(brief, brand, fmt, imgIndex, count, sceneType);
+      const prompt = buildImagePrompt(brief, brand, fmt, imgIndex, count, sceneType, sceneDesc);
       log(outputDir, 'api_image_gen', `Generating ${imgIndex}/${count}: ${filename} [${sceneType}] (${model}, ${ratio})`);
       log(outputDir, 'api_image_gen', `Prompt: ${prompt.slice(0, 200)}`);
 
@@ -203,6 +205,38 @@ async function generateApiImages(outputDir, projectDir, model = DEFAULT_MODEL, c
     const dims = getImageDimensions(outputPath);
     assets.push({ path: outputPath, sceneType, ...dims });
     imgIndex++;
+  }
+
+  // If no images were generated at all, signal bot and wait for decision
+  if (assets.length === 0) {
+    const lastError = fs.readFileSync
+      ? (() => {
+          try {
+            const logPath = path.resolve(PROJECT_ROOT, outputDir, 'logs', 'api_image_gen.log');
+            const lines = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
+            const failLine = [...lines].reverse().find(l => l.includes('Failed image'));
+            return failLine ? failLine.replace(/.*Failed image \d+: /, '') : 'Todas as imagens falharam';
+          } catch { return 'Todas as imagens falharam'; }
+        })()
+      : 'Todas as imagens falharam';
+
+    process.stdout.write(`[IMAGE_GEN_ERROR] ${outputDir} ${lastError}\n`);
+    log(outputDir, 'api_image_gen', `[IMAGE_GEN_ERROR] emitted — waiting for user decision...`);
+
+    const decisionPath = path.resolve(PROJECT_ROOT, outputDir, 'imgs', 'error_decision.json');
+    const decided = await waitForFile(decisionPath, 600000);
+    if (!decided) throw new Error('Timeout aguardando decisão do usuário sobre erro de imagens');
+
+    const decision = JSON.parse(fs.readFileSync(decisionPath, 'utf-8'));
+    fs.unlinkSync(decisionPath);
+
+    if (decision.action === 'cancel') throw new Error('Geração de imagens cancelada pelo usuário');
+    if (decision.action === 'retry') {
+      log(outputDir, 'api_image_gen', 'Retrying image generation by user request...');
+      return generateApiImages(outputDir, projectDir, model, count, formats, brief, useBrandOverlay, scenePurposes);
+    }
+    // action === 'advance' — continue without images (CSS-only fallback)
+    log(outputDir, 'api_image_gen', 'Advancing without images by user request.');
   }
 
   return assets;
@@ -616,6 +650,24 @@ async function handleVideoAdSpecialist(job) {
         `  ${i + 1}. Video ${i + 1} — 20 seconds, unique angle on the campaign theme`
       ).join('\n');
 
+  // Check for background music files in project assets
+  const musicDir = path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music');
+  const musicFiles = fs.existsSync(musicDir)
+    ? fs.readdirSync(musicDir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f)).map(f => `${project_dir}/assets/music/${f}`)
+    : [];
+  const musicInstructions = musicFiles.length > 0 ? `
+BACKGROUND MUSIC (available files):
+${musicFiles.map(f => `  - ${f}`).join('\n')}
+- Set "music" in the scene plan to the chosen file path
+- Set "music_volume" to 0.10–0.20 (default 0.15 — must not overpower narration)
+- Choose the file that best matches the campaign energy and BPM of the video
+- If no music file fits, set "music": null
+` : `
+BACKGROUND MUSIC: No music files found in ${project_dir}/assets/music/.
+- Set "music": null in the scene plan
+- User can add .mp3 files to ${project_dir}/assets/music/ and re-run
+`;
+
   const audioInstructions = hasElevenLabs ? `
 AUDIO NARRATION (ElevenLabs available):
 - Write a narration script for each video (20-30 seconds of natural speech)
@@ -624,46 +676,23 @@ AUDIO NARRATION (ElevenLabs available):
 - Include the narration text in the scene plan under "narration_script"
 - Include the audio path in the scene plan under "audio": "${output_dir}/audio/video_0N_narration.mp3"
 - Recommended voices: rachel (warm/emotional), bella (clear/friendly), antoni (professional)
-` : `
+${musicInstructions}` : `
 AUDIO: ElevenLabs not configured. Generate silent videos. Narration scripts only in scene plan.
-`;
-
-  // ── Pre-generate images via API if image_source === 'api' ──────────────────
-  let apiGeneratedAssetsVideo = [];
-  if (image_source === 'api') {
-    const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
-    const useBrand = job.data.use_brand_overlay !== false;
-    const videoImgCount = video_count * 5;
-    const videoScenes = ['hook', 'tension', 'solution', 'social_proof', 'cta'];
-    const scenePurposes = Array.from({ length: videoImgCount }, (_, i) => videoScenes[i % videoScenes.length]);
-    log(output_dir, 'video_ad_specialist', `Generating ${videoImgCount} images via KIE API (${model}, brand=${useBrand})...`);
-    try {
-      apiGeneratedAssetsVideo = await generateApiImages(
-        output_dir, project_dir, model, videoImgCount, ['story_1080x1920'], campaign_brief, useBrand, scenePurposes
-      );
-      log(output_dir, 'video_ad_specialist', `Generated ${apiGeneratedAssetsVideo.length} images → ${output_dir}/imgs/`);
-    } catch (err) {
-      log(output_dir, 'video_ad_specialist', `API image generation failed: ${err.message}.`);
-    }
-  }
+${musicInstructions}`;
 
   // ── Build image source section based on image_source ───────────────────────
+  // NOTE: for 'api' mode, images are generated AFTER the scene plan is written
+  // so that each scene's image_prompt drives generation (sync script ↔ image)
   let imageSourceSection = '';
   if (image_source === 'api') {
-    if (apiGeneratedAssetsVideo.length > 0) {
-      const generatedList = formatAssetList(apiGeneratedAssetsVideo);
-      imageSourceSection = `
-STEP 2 — AI-generated images for video scenes (generated via KIE API):
-${generatedList}
-
-Use these images in scene "image" fields — same rules as brand images.
-They were generated in 9:16 portrait format, ideal for 1080×1920 video.`;
-    } else {
-      imageSourceSection = `
-STEP 2 — Image source: null (API generation failed)
-- Set "image": null for all scenes
-- Renderer will use dark solid background`;
-    }
+    imageSourceSection = `
+STEP 2 — Image source: KIE AI API (images will be generated AFTER you write the scene plan)
+- Set "image": null for all scenes in the JSON
+- For EACH scene, add an "image_prompt" field: a concise English visual description (max 200 chars)
+  of exactly what should be shown visually in that scene — derived from the scene's narration and purpose
+  Example: "tired person sitting on bed at sunrise, exhausted expression, warm muted light, cinematic"
+- The pipeline will generate one image per scene using your image_prompt + brand colors
+- Do NOT use generic descriptions — each image_prompt must match what is being said/shown in that scene`;
   } else if (image_source === 'pexels') {
     const pexelsKey = process.env.PEXELS_API_KEY || '';
     imageSourceSection = `
@@ -724,6 +753,8 @@ STEP 4 — For EACH video, create a scene plan JSON and save to ${output_dir}/vi
   "video_length": 25,
   "format": "1080x1920",
   "audio": "${output_dir}/audio/video_0N_narration.mp3",
+  "music": "${project_dir}/assets/music/background.mp3",
+  "music_volume": 0.15,
   "narration_script": "full narration text (20-30 seconds of natural speech)...",
   "voice": "rachel",
   "scenes": [
@@ -731,9 +762,10 @@ STEP 4 — For EACH video, create a scene plan JSON and save to ${output_dir}/vi
       "id": "hook",
       "duration": 3,
       "type": "hook",
-      "image": "<absolute path or null>",
+      "image": "<absolute path or null — use null when image_source is api>",
       "image_type": "raw",
       "image_crop_focus": "center-top",
+      "image_prompt": "concise English visual description for this scene (max 200 chars) — only when image_source is api",
       "text_overlay": "Max 6 words here",
       "narration": "This scene's narration line"
     }
@@ -755,6 +787,70 @@ IMPORTANT: ONLY generate scene plans and audio. Do NOT run render-video-ffmpeg.j
 After saving all scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
   await runClaude(prompt, 'video_ad_specialist', output_dir, 900000);
+
+  // ── PHASE 1.5: Post-generation — generate per-scene images from image_prompt ─
+  // Only when image_source === 'api'. Images are generated here (AFTER scene plan)
+  // so each scene's image_prompt (derived from its narration/purpose) drives generation.
+  if (image_source === 'api') {
+    const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
+    const useBrand = job.data.use_brand_overlay !== false;
+    const brand = useBrand ? readBrandContext(project_dir) : null;
+    if (brand) log(output_dir, 'video_ad_specialist', `Brand context: ${brand.brandName}`);
+
+    for (let i = 1; i <= video_count; i++) {
+      const idx = String(i).padStart(2, '0');
+      const planPath = path.resolve(PROJECT_ROOT, output_dir, 'video', `video_${idx}_scene_plan.json`);
+      if (!fs.existsSync(planPath)) continue;
+
+      let plan;
+      try { plan = JSON.parse(fs.readFileSync(planPath, 'utf-8')); }
+      catch (e) { log(output_dir, 'video_ad_specialist', `Could not parse scene plan ${idx}: ${e.message}`); continue; }
+
+      const absImgsDir = path.resolve(PROJECT_ROOT, output_dir, 'imgs');
+      fs.mkdirSync(absImgsDir, { recursive: true });
+
+      let planChanged = false;
+      const total = plan.scenes.length;
+
+      for (let s = 0; s < total; s++) {
+        const scene = plan.scenes[s];
+        if (!scene.image_prompt) continue; // skip scenes without explicit prompt
+        if (scene.image && fs.existsSync(scene.image)) continue; // already has image
+
+        const filename = `video_${idx}_scene_${String(s + 1).padStart(2, '0')}_${scene.type || 'scene'}.jpg`;
+        const outputPath = path.join(absImgsDir, filename);
+        const sceneType = scene.type || scene.id || 'solution';
+        const colorHint = brand?.colors?.length ? ` Colors: ${brand.colors.slice(0, 2).join(', ')}.` : '';
+        // Build final prompt: scene description + mood + brand colors + restrictions
+        const moodMap = {
+          hook: 'dramatic tension, high contrast, strong impact',
+          tension: 'emotional challenge, aspiration, desire to change',
+          solution: 'transformation, empowerment, positive energy',
+          social_proof: 'community, people achieving, belonging',
+          cta: 'optimistic, inviting, forward momentum',
+        };
+        const mood = moodMap[sceneType] || moodMap.solution;
+        const rawPrompt = `${scene.image_prompt}. ${mood}. vertical 9:16.${colorHint} Cinematic lighting, photorealistic. No text, no words, no watermark, no logo.`;
+        const finalPrompt = rawPrompt.length > 490 ? rawPrompt.slice(0, 487) + '...' : rawPrompt;
+
+        log(output_dir, 'video_ad_specialist', `Generating image for video_${idx} scene ${s + 1}/${total} [${sceneType}]: ${scene.image_prompt.slice(0, 80)}`);
+        try {
+          await generateImage(outputPath, finalPrompt, model, '9:16');
+          scene.image = outputPath;
+          scene.image_type = scene.image_type || 'raw';
+          planChanged = true;
+          process.stdout.write(`[STAGE2_IMAGE_READY] ${output_dir} ${outputPath}\n`);
+        } catch (err) {
+          log(output_dir, 'video_ad_specialist', `Failed scene image ${s + 1}: ${err.message}`);
+        }
+      }
+
+      if (planChanged) {
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+        log(output_dir, 'video_ad_specialist', `Updated scene plan with generated image paths: video_${idx}_scene_plan.json`);
+      }
+    }
+  }
 
   // ── PHASE 2: Wait for user approval via file handshake ─────────────────────
   const approvalPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'approved.json');
@@ -1050,7 +1146,9 @@ const worker = new Worker(
   },
   {
     connection: redisConnection,
-    concurrency: 5, // one slot per agent — prevents dependency-waiting jobs from blocking others
+    concurrency: 5,
+    lockDuration: 600000,    // 10 min — agents run Claude CLI which takes a long time
+    stalledInterval: 60000,  // check stalled every 60s (default 30s)
   }
 );
 
@@ -1072,6 +1170,11 @@ worker.on('failed', (job, err) => {
 worker.on('progress', (job, progress) => {
   console.log(`  ⏳ ${job.data.agent} — ${progress}% complete`);
 });
+
+// Drain stale jobs left from previous worker runs (active/waiting jobs with no live worker)
+pipelineQueue.drain().then(() => {
+  console.log('   Stale queue drained.');
+}).catch(() => {});
 
 console.log(`\n🔄 Worker started — listening on queue: "${QUEUE_NAME}"`);
 console.log('   Agents will be invoked via Claude CLI (claude -p)');

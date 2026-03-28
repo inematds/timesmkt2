@@ -889,6 +889,37 @@ bot.on('message:text', async (ctx) => {
   const chatId = String(ctx.chat.id);
   const s = session.get(chatId);
 
+  // ── Image generation error decision ────────────────────────────────────
+  if (s.pendingImageError) {
+    const lower = text.toLowerCase().trim();
+    const { outputDir } = s.pendingImageError;
+    const decisionPath = path.resolve(PROJECT_ROOT, outputDir, 'imgs', 'error_decision.json');
+
+    let action = null;
+    if (/^(avan[çc]|avanc|continuar|sem imagem)/.test(lower)) action = 'advance';
+    else if (/^(tentar|retry|repetir|novamente)/.test(lower))  action = 'retry';
+    else if (/^(cancel|cancelar|nao|não|para)/.test(lower))    action = 'cancel';
+
+    if (action) {
+      fs.mkdirSync(path.dirname(decisionPath), { recursive: true });
+      fs.writeFileSync(decisionPath, JSON.stringify({ action, ts: Date.now() }));
+      session.clearPendingImageError(chatId);
+      const msgs = {
+        advance:  '▶️ Avançando sem imagens — usando layout CSS.',
+        retry:    '🔄 Tentando gerar as imagens novamente...',
+        cancel:   '❌ Campanha cancelada.',
+      };
+      await ctx.reply(msgs[action]);
+      return;
+    }
+    // unknown reply — show options again
+    await ctx.reply(
+      'Responda:\n• <b>avançar</b> — continuar sem imagens\n• <b>tentar novamente</b>\n• <b>cancelar</b>',
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
   // ── V3 stage approval ──────────────────────────────────────────────────
   if (s.campaignV3?.pendingApproval) {
     const handled = await handleV3StageApproval(ctx, chatId, s, text);
@@ -948,30 +979,6 @@ Keep the same JSON structure. Only modify what the feedback requests.`;
   // ── Confirmation replies for pending campaign ───────────────────────────
   if (s.pendingCampaign) {
     const lower = text.toLowerCase().trim();
-
-    // Handle brand overlay question (only when awaiting that answer)
-    if (s.pendingCampaign._awaiting_brand_answer) {
-      const withBrand    = /\bcom\s*marca\b|\bsim\b.*\bcom\b|\bcom\b/i.test(lower);
-      const withoutBrand = /\bsem\s*marca\b|\bsim\b.*\bsem\b|\bsem\b/i.test(lower);
-      const isCancel     = /^(nao|não|cancela|cancel)/.test(lower);
-
-      if (isCancel) {
-        session.clearPendingCampaign(chatId);
-        await ctx.reply('Campanha cancelada.');
-        return;
-      }
-
-      if (withBrand || withoutBrand || /^sim/.test(lower)) {
-        const updatedPayload = { ...s.pendingCampaign, _awaiting_brand_answer: undefined };
-        updatedPayload.use_brand_overlay = withoutBrand ? false : true;
-        session.setPendingCampaign(chatId, updatedPayload);
-        const brandMsg = updatedPayload.use_brand_overlay
-          ? 'Ótimo — as imagens usarão as cores e estilo da marca.'
-          : 'Ok — as imagens serão geradas sem identidade de marca.';
-        await ctx.reply(`${brandMsg}\n\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`, { parse_mode: 'HTML' });
-        return;
-      }
-    }
 
     const isConfirm = /^(sim|ok|confirmar|confirma|aprovado|aprovar|vai|bora|yes|roda|rodar)/.test(lower);
     const isCancel  = /^(nao|não|cancela|cancelar|cancel|para|parar|no\b)/.test(lower);
@@ -1127,17 +1134,13 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   lines.push(`<b>Aprovações:</b> ${modeParts.join(' → ')}`);
   lines.push(`<b>Notificações:</b> ${payload.notifications === false ? 'desativadas' : 'ativadas'}`);
 
+  // Always use brand context (colors + visual world) — never brand name in image
   if (isApi && payload.use_brand_overlay === undefined) {
-    // brand_overlay not explicitly set — ask
-    lines.push(`\n<b>A marca deve aparecer nas imagens geradas?</b>`);
-    lines.push(`Responda <b>sim com marca</b>, <b>sim sem marca</b>, ou <b>não</b> para cancelar.`);
-    lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
-    session.setPendingCampaign(chatId, { ...payload, _awaiting_brand_answer: true });
-  } else {
-    lines.push(`\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`);
-    lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
-    session.setPendingCampaign(chatId, payload);
+    payload = { ...payload, use_brand_overlay: true };
   }
+  lines.push(`\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`);
+  lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
+  session.setPendingCampaign(chatId, payload);
 
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
 
@@ -1485,6 +1488,24 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
             caption: path.basename(imgPath),
           }).catch(e => console.error('[v3 photo]', e.message));
         }
+      }
+    }
+
+    // Image generation failed — ask user what to do
+    if (text.includes('[IMAGE_GEN_ERROR]')) {
+      const match = text.match(/\[IMAGE_GEN_ERROR\]\s*(\S+)\s+(.+)/);
+      if (match) {
+        const outputDir = match[1];
+        const errorMsg  = match[2].trim();
+        session.setPendingImageError(chatId, { outputDir });
+        bot.api.sendMessage(chatId,
+          `⚠️ <b>Erro na geração de imagens</b>\n\n<code>${errorMsg}</code>\n\n` +
+          `O que deseja fazer?\n` +
+          `• <b>avançar</b> — continuar sem imagens (layout CSS)\n` +
+          `• <b>tentar novamente</b> — repetir a geração\n` +
+          `• <b>cancelar</b> — cancelar a campanha`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
       }
     }
 
