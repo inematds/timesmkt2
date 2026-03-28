@@ -139,6 +139,12 @@ function renderVideo(scenePlanPath, outputPath) {
       // Font size based on text length
       const fontSize = textOverlay.length > 60 ? 52 : textOverlay.length > 30 ? 64 : 80;
 
+      // image_type: 'banner' → only scale/letterbox (no crop, no Ken Burns)
+      //             'raw'   → Ken Burns zoom/pan (default)
+      //             'clip'  → handled separately as video input
+      const imageType = scene.image_type || 'raw';
+      const isBanner = imageType === 'banner';
+
       // Ken Burns motion type: alternate zoom-in / zoom-out / pan-right / pan-left per scene
       const motionTypes = ['zoom_in', 'zoom_out', 'pan_right', 'pan_left'];
       const motionType = motionTypes[i % motionTypes.length];
@@ -180,9 +186,17 @@ function renderVideo(scenePlanPath, outputPath) {
       let vfParts = [];
 
       if (imgSrc && fs.existsSync(imgSrc)) {
-        // Scale to fit first, then Ken Burns
-        vfParts.push(`scale=${vidW * 2}:${vidH * 2}:force_original_aspect_ratio=increase`);
-        vfParts.push(kbFilter);
+        if (isBanner || imageType === 'clip') {
+          // Banner or video clip: scale to fit with letterbox/pillarbox — never crop edges
+          vfParts.push(
+            `scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease,` +
+            `pad=${vidW}:${vidH}:(ow-iw)/2:(oh-ih)/2:color=black`
+          );
+        } else {
+          // Raw photo: scale to 2x then Ken Burns (zoom/pan)
+          vfParts.push(`scale=${vidW * 2}:${vidH * 2}:force_original_aspect_ratio=increase`);
+          vfParts.push(kbFilter);
+        }
       } else {
         // Solid dark background — just scale, no KB
         vfParts.push(`scale=${vidW}:${vidH}`);
@@ -207,34 +221,51 @@ function renderVideo(scenePlanPath, outputPath) {
           `fontcolor=white@1:alpha='${alphaExpr}':` +
           `x=(w-text_w)/2:y=h-${Math.round(fontSize * 2.4)}:` +
           `fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:` +
-          `shadowcolor=black@0.9:shadowx=3:shadowy=3:shadowx=3`
+          `shadowcolor=black@0.9:shadowx=3:shadowy=3`
         );
       }
 
       const vf = vfParts.join(',');
 
-      const ffArgs = imgSrc && fs.existsSync(imgSrc)
-        ? [
-            '-loop', '1',
-            '-i', imgSrc,
-            '-t', String(duration),
-            '-vf', vf,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-r', String(fps),
-            '-an',
-            '-y', segOut,
-          ]
-        : [
-            '-f', 'lavfi',
-            '-i', `color=c=0x0D0D0D:size=${vidW}x${vidH}:rate=${fps}`,
-            '-t', String(duration),
-            '-vf', vf,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-an',
-            '-y', segOut,
-          ];
+      let ffArgs;
+      if (imageType === 'clip' && imgSrc && fs.existsSync(imgSrc)) {
+        // Video clip: use as direct video input — trim to scene duration, scale to fit, add fade/text
+        ffArgs = [
+          '-i', imgSrc,
+          '-t', String(duration),
+          '-vf', vf,
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-r', String(fps),
+          '-an',
+          '-y', segOut,
+        ];
+      } else if (imgSrc && fs.existsSync(imgSrc)) {
+        // Static image (raw or banner): loop for duration
+        ffArgs = [
+          '-loop', '1',
+          '-i', imgSrc,
+          '-t', String(duration),
+          '-vf', vf,
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-r', String(fps),
+          '-an',
+          '-y', segOut,
+        ];
+      } else {
+        // No image — solid dark background
+        ffArgs = [
+          '-f', 'lavfi',
+          '-i', `color=c=0x0D0D0D:size=${vidW}x${vidH}:rate=${fps}`,
+          '-t', String(duration),
+          '-vf', vf,
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-an',
+          '-y', segOut,
+        ];
+      }
 
       execFileSync('ffmpeg', ffArgs, { stdio: 'pipe' });
     }

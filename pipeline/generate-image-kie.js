@@ -1,23 +1,24 @@
 /**
  * KIE Image Generation
  *
- * Generates images via KIE API (Flux Kontext, GPT-Image-1, etc.)
- * Polls for completion and downloads the result.
+ * Generates images via KIE API.
+ * Default model: z-image (use others only if explicitly requested).
  *
  * Usage (CLI):
  *   node pipeline/generate-image-kie.js <output.jpg> "<prompt>" [model] [aspect_ratio]
  *
  * Models:
- *   flux-kontext-pro   — fast, high quality (default)
- *   flux-kontext-max   — slower, maximum quality
- *   gpt-image-1        — OpenAI GPT-Image-1 style
+ *   z-image            — default, best quality/speed balance
+ *   z-image-turbo      — faster variant
+ *   flux-kontext-pro   — Flux Pro
+ *   flux-kontext-max   — Flux Max quality
+ *   gpt-image-1        — OpenAI GPT-Image-1
  *
  * Aspect ratios:
  *   1:1   — square (Instagram carousel, 1080x1080)
  *   9:16  — portrait (Stories, Reels, 1080x1920)
  *   16:9  — landscape (YouTube thumbnail)
- *   4:3   — standard
- *   3:4   — portrait standard
+ *   4:3 / 3:4
  */
 
 const https = require('https');
@@ -30,19 +31,161 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const KIE_API_KEY = process.env.KIE_API_KEY;
 const BASE_URL = 'https://api.kie.ai';
+const DEFAULT_MODEL = 'z-image';
 
 const MODELS = {
-  'flux-kontext-pro': { endpoint: '/api/v1/flux/kontext/generate', pollEndpoint: '/api/v1/flux/kontext/record-info', type: 'flux' },
-  'flux-kontext-max': { endpoint: '/api/v1/flux/kontext/generate', pollEndpoint: '/api/v1/flux/kontext/record-info', type: 'flux' },
-  'gpt-image-1':      { endpoint: '/api/v1/gpt4o-image/generate',  pollEndpoint: '/api/v1/jobs/recordInfo',            type: 'gpt' },
+  'z-image':          { endpoint: '/api/v1/jobs/createTask',          pollEndpoint: '/api/v1/jobs/recordInfo', type: 'market' },
+  'z-image-turbo':    { endpoint: '/api/v1/jobs/createTask',          pollEndpoint: '/api/v1/jobs/recordInfo', type: 'market' },
+  'flux-kontext-pro': { endpoint: '/api/v1/flux/kontext/generate',    pollEndpoint: '/api/v1/flux/kontext/record-info', type: 'flux' },
+  'flux-kontext-max': { endpoint: '/api/v1/flux/kontext/generate',    pollEndpoint: '/api/v1/flux/kontext/record-info', type: 'flux' },
+  'gpt-image-1':      { endpoint: '/api/v1/gpt4o-image/generate',     pollEndpoint: '/api/v1/jobs/recordInfo', type: 'gpt' },
 };
 
-// Exported list for use in prompts and confirmations
 const AVAILABLE_MODELS = [
-  { id: 'flux-kontext-pro', label: 'Flux Kontext Pro (rápido, alta qualidade)' },
-  { id: 'flux-kontext-max', label: 'Flux Kontext Max (mais lento, qualidade máxima)' },
+  { id: 'z-image',          label: 'Z-Image (padrão)' },
+  { id: 'z-image-turbo',    label: 'Z-Image Turbo (mais rápido)' },
+  { id: 'flux-kontext-pro', label: 'Flux Kontext Pro' },
+  { id: 'flux-kontext-max', label: 'Flux Kontext Max (qualidade máxima)' },
   { id: 'gpt-image-1',      label: 'GPT-Image-1 (estilo OpenAI)' },
 ];
+
+// ── Brand context reader ──────────────────────────────────────────────────────
+
+/**
+ * Reads brand_identity.md and extracts key visual attributes for image prompts.
+ * Returns an object with colors, style keywords, subject direction.
+ */
+function readBrandContext(projectDir) {
+  const projectRoot = path.resolve(__dirname, '..');
+  const brandFile = path.join(projectRoot, projectDir, 'knowledge', 'brand_identity.md');
+
+  if (!fs.existsSync(brandFile)) return null;
+
+  const content = fs.readFileSync(brandFile, 'utf-8');
+
+  // Extract color palette
+  const colorMatches = content.match(/#[0-9A-Fa-f]{6}/g) || [];
+  const uniqueColors = [...new Set(colorMatches)].slice(0, 5);
+
+  // Extract visual style keywords
+  const styleSection = content.match(/### Estilo visual\n([\s\S]*?)(?=\n---|\n##)/)?.[1] || '';
+  const styleKeywords = styleSection
+    .split('\n')
+    .filter(l => l.startsWith('-'))
+    .map(l => l.replace(/^-\s*/, '').split('—')[0].trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  // Extract brand name and tagline
+  const brandName = content.match(/^# Brand Identity — (.+)/m)?.[1] || '';
+  const tagline = content.match(/> "(.+?)"/)?.[1] || '';
+
+  // Extract audience/personality descriptors
+  const personalityLines = content.match(/\*\*(.+?)\*\* —/g) || [];
+  const personality = personalityLines
+    .map(l => l.replace(/\*\*/g, '').replace(/ —$/, '').trim())
+    .slice(0, 3);
+
+  return { brandName, tagline, colors: uniqueColors, styleKeywords, personality };
+}
+
+// ── Prompt builder ────────────────────────────────────────────────────────────
+
+/**
+ * Builds a rich, brand-aware image generation prompt.
+ *
+ * @param {string} brief        - campaign brief
+ * @param {object|null} brand   - brand context from readBrandContext()
+ * @param {string} format       - e.g. 'carousel_1080x1080', 'story_1080x1920'
+ * @param {number} index        - 1-based scene index
+ * @param {number} total        - total number of images
+ * @param {string} sceneType    - 'hook'|'tension'|'solution'|'social_proof'|'cta'
+ */
+function buildImagePrompt(brief, brand, format, index, total, sceneType = '') {
+  const isStory = format.includes('1920') || format.includes('9:16');
+  const orientation = isStory ? 'vertical portrait 9:16' : 'square 1:1';
+
+  // Scene purpose
+  const purposeMap = {
+    hook:         'dramatic opening hook — high contrast, strong visual tension, immediate impact',
+    tension:      'emotional tension — aspiration, challenge, the desire to grow',
+    solution:     'transformation and solution — empowerment, clarity, positive energy',
+    social_proof: 'community and credibility — people achieving, belonging, results',
+    cta:          'clear call to action — inviting, optimistic, forward momentum',
+  };
+  const sceneFirst  = index === 1;
+  const sceneLast   = index === total;
+  const purposeHint = purposeMap[sceneType] ||
+    (sceneFirst ? purposeMap.hook : sceneLast ? purposeMap.cta : purposeMap.solution);
+
+  // Brand visual identity
+  const brandParts = [];
+  if (brand) {
+    if (brand.brandName) brandParts.push(`brand: ${brand.brandName}`);
+    if (brand.colors?.length) brandParts.push(`color palette: ${brand.colors.join(', ')}`);
+    if (brand.styleKeywords?.length) brandParts.push(brand.styleKeywords.join(', '));
+  }
+
+  // Extract thematic keywords from brief (nouns and adjectives, max 8)
+  const themeKeywords = extractThemeKeywords(brief);
+
+  // Build the prompt parts
+  const parts = [
+    // Subject + context
+    themeKeywords.length
+      ? `Professional marketing photograph. Theme: ${themeKeywords.join(', ')}.`
+      : 'Professional marketing photograph.',
+
+    // Scene purpose
+    `Scene purpose: ${purposeHint}.`,
+
+    // Brand identity
+    brandParts.length
+      ? `Visual style: ${brandParts.join('; ')}.`
+      : '',
+
+    // Composition
+    `Format: ${orientation}, cinematic composition, rule of thirds.`,
+
+    // Lighting
+    'Dramatic cinematic lighting, high contrast, rich shadows and highlights.',
+
+    // Quality
+    'Photorealistic, 8K quality, sharp focus on subject, bokeh background.',
+
+    // Restrictions
+    'No text overlays, no watermarks, no logos, no UI elements.',
+  ];
+
+  return parts.filter(Boolean).join(' ');
+}
+
+/**
+ * Extracts the most meaningful thematic keywords from a campaign brief.
+ * Focuses on nouns, proper nouns, and action words — removes filler.
+ */
+function extractThemeKeywords(brief) {
+  if (!brief) return [];
+
+  // Portuguese stop words to filter out
+  const stopWords = new Set([
+    'de','do','da','dos','das','em','no','na','nos','nas','para','por','com','uma',
+    'um','que','se','não','mas','ou','e','o','a','os','as','ao','aos','às',
+    'este','esta','estes','estas','esse','essa','isso','aqui','já','mais',
+    'muito','ser','ter','foi','são','está','como','sua','seu','seus','suas',
+    'todo','toda','todos','todas','quando','onde','qual','quais','porque',
+    'sobre','entre','sem','pelo','pela','pelos','pelas','até','após',
+  ]);
+
+  return brief
+    .toLowerCase()
+    .replace(/[^a-záéíóúâêîôûãõç\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !stopWords.has(w))
+    .slice(0, 8);
+}
+
+// ── API request helpers ───────────────────────────────────────────────────────
 
 function apiRequest(method, urlPath, body = null) {
   return new Promise((resolve, reject) => {
@@ -61,11 +204,8 @@ function apiRequest(method, urlPath, body = null) {
       let data = '';
       res.on('data', d => { data += d; });
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error(`Invalid JSON response: ${data.slice(0, 200)}`));
-        }
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error(`Invalid JSON: ${data.slice(0, 200)}`)); }
       });
     });
 
@@ -81,64 +221,77 @@ function downloadFile(fileUrl, outputPath) {
     const file = fs.createWriteStream(outputPath);
     const protocol = fileUrl.startsWith('https') ? https : http;
 
-    protocol.get(fileUrl, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        file.close();
-        return downloadFile(res.headers.location, outputPath).then(resolve).catch(reject);
-      }
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(outputPath); });
-    }).on('error', (err) => {
-      fs.unlink(outputPath, () => {});
-      reject(err);
-    });
+    const get = (url) => {
+      protocol.get(url, (res) => {
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          file.close();
+          return downloadFile(res.headers.location, outputPath).then(resolve).catch(reject);
+        }
+        res.pipe(file);
+        file.on('finish', () => { file.close(); resolve(outputPath); });
+      }).on('error', (err) => {
+        fs.unlink(outputPath, () => {});
+        reject(err);
+      });
+    };
+    get(fileUrl);
   });
 }
 
 async function pollForResult(taskId, modelConfig, maxWaitMs = 300000) {
   const start = Date.now();
-  const interval = 4000;
 
   while (Date.now() - start < maxWaitMs) {
-    await new Promise(r => setTimeout(r, interval));
+    await new Promise(r => setTimeout(r, 4000));
 
-    const pollUrl = `${modelConfig.pollEndpoint}?taskId=${taskId}`;
-    const result = await apiRequest('GET', pollUrl);
+    const result = await apiRequest('GET', `${modelConfig.pollEndpoint}?taskId=${taskId}`);
+    const d = result.data;
+    if (!d) throw new Error(`Poll error: ${JSON.stringify(result)}`);
 
     if (modelConfig.type === 'flux') {
-      const d = result.data;
-      if (!d) throw new Error(`Poll error: ${JSON.stringify(result)}`);
       if (d.successFlag === 1) return d.response?.resultImageUrl || d.response?.originImageUrl;
       if (d.successFlag === 2 || d.successFlag === 3) throw new Error(`Generation failed (flag ${d.successFlag})`);
-      // successFlag === 0 means still generating
     } else {
-      // gpt / market
-      const d = result.data;
-      if (!d) throw new Error(`Poll error: ${JSON.stringify(result)}`);
+      // market (z-image, gpt-image-1)
       if (d.state === 'success') {
         const parsed = JSON.parse(d.resultJson || '{}');
         return parsed.resultUrls?.[0] || parsed.url;
       }
-      if (d.state === 'fail') throw new Error(`Generation failed`);
+      if (d.state === 'fail') throw new Error(`Generation failed: ${d.failMsg || 'unknown'}`);
     }
   }
 
-  throw new Error(`Timeout waiting for image generation (${maxWaitMs / 1000}s)`);
+  throw new Error(`Timeout after ${maxWaitMs / 1000}s`);
 }
 
-async function generateImage(outputPath, prompt, model = 'flux-kontext-pro', aspectRatio = '1:1') {
+// ── Main generate function ────────────────────────────────────────────────────
+
+async function generateImage(outputPath, prompt, model = DEFAULT_MODEL, aspectRatio = '1:1') {
   if (!KIE_API_KEY) throw new Error('KIE_API_KEY not set in .env');
 
   const modelConfig = MODELS[model];
   if (!modelConfig) throw new Error(`Unknown model: ${model}. Available: ${Object.keys(MODELS).join(', ')}`);
 
-  console.log(`Generating image: model=${model} ratio=${aspectRatio}`);
-  console.log(`Prompt: ${prompt.slice(0, 100)}...`);
+  console.log(`[KIE] model=${model} ratio=${aspectRatio}`);
+  console.log(`[KIE] prompt: ${prompt.slice(0, 120)}...`);
 
   let taskId;
 
-  if (modelConfig.type === 'flux') {
-    const body = {
+  if (modelConfig.type === 'market') {
+    // z-image, z-image-turbo
+    const res = await apiRequest('POST', modelConfig.endpoint, {
+      model,
+      input: {
+        prompt,
+        aspect_ratio: aspectRatio,
+        nsfw_checker: true,
+      },
+    });
+    if (res.code !== 200) throw new Error(`KIE error: ${res.msg} (${res.code})`);
+    taskId = res.data?.taskId;
+
+  } else if (modelConfig.type === 'flux') {
+    const res = await apiRequest('POST', modelConfig.endpoint, {
       prompt,
       model,
       aspectRatio,
@@ -146,47 +299,44 @@ async function generateImage(outputPath, prompt, model = 'flux-kontext-pro', asp
       enableTranslation: true,
       promptUpsampling: false,
       safetyTolerance: 2,
-    };
-    const res = await apiRequest('POST', modelConfig.endpoint, body);
-    if (res.code !== 200) throw new Error(`KIE API error: ${res.msg} (${res.code})`);
+    });
+    if (res.code !== 200) throw new Error(`KIE error: ${res.msg} (${res.code})`);
     taskId = res.data?.taskId;
+
   } else {
     // gpt-image-1
     const sizeMap = { '1:1': '1:1', '9:16': '2:3', '16:9': '3:2', '3:4': '2:3', '4:3': '3:2' };
-    const body = {
+    const res = await apiRequest('POST', modelConfig.endpoint, {
       prompt,
       size: sizeMap[aspectRatio] || '1:1',
       isEnhance: false,
-    };
-    const res = await apiRequest('POST', modelConfig.endpoint, body);
-    if (res.code !== 200) throw new Error(`KIE API error: ${res.msg} (${res.code})`);
+    });
+    if (res.code !== 200) throw new Error(`KIE error: ${res.msg} (${res.code})`);
     taskId = res.data?.taskId;
   }
 
-  if (!taskId) throw new Error('No taskId returned from KIE API');
-  console.log(`Task ID: ${taskId} — polling for result...`);
+  if (!taskId) throw new Error('No taskId returned');
+  console.log(`[KIE] taskId=${taskId} — polling...`);
 
   const imageUrl = await pollForResult(taskId, modelConfig);
   if (!imageUrl) throw new Error('No image URL in result');
 
-  console.log(`Downloading: ${imageUrl.slice(0, 80)}...`);
   await downloadFile(imageUrl, outputPath);
-  console.log(`✅ Image saved: ${outputPath}`);
-
+  console.log(`[KIE] ✅ saved: ${outputPath}`);
   return outputPath;
 }
 
 // CLI mode
 if (require.main === module) {
-  const [,, outputArg, promptArg, modelArg = 'flux-kontext-pro', ratioArg = '1:1'] = process.argv;
+  const [,, outputArg, promptArg, modelArg, ratioArg = '1:1'] = process.argv;
   if (!outputArg || !promptArg) {
     console.error('Usage: node pipeline/generate-image-kie.js <output.jpg> "<prompt>" [model] [aspect_ratio]');
     console.error('\nAvailable models:');
     AVAILABLE_MODELS.forEach(m => console.error(`  ${m.id} — ${m.label}`));
     process.exit(1);
   }
-  generateImage(outputArg, promptArg, modelArg, ratioArg)
+  generateImage(outputArg, promptArg, modelArg || DEFAULT_MODEL, ratioArg)
     .catch(e => { console.error(`❌ ${e.message}`); process.exit(1); });
 }
 
-module.exports = { generateImage, AVAILABLE_MODELS };
+module.exports = { generateImage, buildImagePrompt, readBrandContext, AVAILABLE_MODELS, DEFAULT_MODEL };

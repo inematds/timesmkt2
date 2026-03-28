@@ -872,6 +872,31 @@ Keep the same JSON structure. Only modify what the feedback requests.`;
   // ── Confirmation replies for pending campaign ───────────────────────────
   if (s.pendingCampaign) {
     const lower = text.toLowerCase().trim();
+
+    // Handle brand overlay question (only when awaiting that answer)
+    if (s.pendingCampaign._awaiting_brand_answer) {
+      const withBrand    = /\bcom\s*marca\b|\bsim\b.*\bcom\b|\bcom\b/i.test(lower);
+      const withoutBrand = /\bsem\s*marca\b|\bsim\b.*\bsem\b|\bsem\b/i.test(lower);
+      const isCancel     = /^(nao|não|cancela|cancel)/.test(lower);
+
+      if (isCancel) {
+        session.clearPendingCampaign(chatId);
+        await ctx.reply('Campanha cancelada.');
+        return;
+      }
+
+      if (withBrand || withoutBrand || /^sim/.test(lower)) {
+        const updatedPayload = { ...s.pendingCampaign, _awaiting_brand_answer: undefined };
+        updatedPayload.use_brand_overlay = withoutBrand ? false : true;
+        session.setPendingCampaign(chatId, updatedPayload);
+        const brandMsg = updatedPayload.use_brand_overlay
+          ? 'Ótimo — as imagens usarão as cores e estilo da marca.'
+          : 'Ok — as imagens serão geradas sem identidade de marca.';
+        await ctx.reply(`${brandMsg}\n\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`, { parse_mode: 'HTML' });
+        return;
+      }
+    }
+
     const isConfirm = /^(sim|ok|confirmar|confirma|aprovado|aprovar|vai|bora|yes|roda|rodar)/.test(lower);
     const isCancel  = /^(nao|não|cancela|cancelar|cancel|para|parar|no\b)/.test(lower);
 
@@ -952,7 +977,8 @@ function buildPayload(taskName, opts, projectDir, today) {
     image_formats: ['carousel_1080x1080', 'story_1080x1920'],
     video_count: parseInt(opts.videos || '1', 10),
     image_source: opts['img-source'] || 'brand',
-    image_model: opts['img-model'] || 'flux-kontext-pro',
+    image_model: opts['img-model'] || process.env.KIE_DEFAULT_MODEL || 'z-image',
+    use_brand_overlay: opts['brand-overlay'] !== 'false',
     campaign_brief: opts.brief || '',
   };
 }
@@ -965,8 +991,15 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   if (payload.skip_image)    skipFlags.push('imagens');
   if (payload.skip_video)    skipFlags.push('video');
 
-  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (gratis)', api: 'KIE API (geração paga)' };
-  const modelLabels = { 'flux-kontext-pro': 'Flux Pro', 'flux-kontext-max': 'Flux Max', 'gpt-image-1': 'GPT-Image-1' };
+  const imgSource = { brand: 'pasta do projeto', pexels: 'Pexels (gratis)', api: 'KIE API (geração)' };
+  const modelLabels = {
+    'z-image': 'Z-Image', 'z-image-turbo': 'Z-Image Turbo',
+    'flux-kontext-pro': 'Flux Pro', 'flux-kontext-max': 'Flux Max', 'gpt-image-1': 'GPT-Image-1',
+  };
+
+  const isApi = payload.image_source === 'api';
+  const modelLabel = modelLabels[payload.image_model] || payload.image_model || 'Z-Image';
+  const brandOverlay = payload.use_brand_overlay !== false;
 
   const lines = [
     `<b>Campanha pronta para rodar — confirme:</b>\n`,
@@ -974,19 +1007,35 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
     `<b>Projeto:</b> <code>${payload.project_dir}</code>`,
     `<b>Data:</b> ${payload.task_date}`,
     `<b>Plataformas:</b> ${payload.platform_targets.join(', ')}`,
-    `<b>Imagens:</b> ${payload.image_count} (${imgSource[payload.image_source] || payload.image_source}${payload.image_source === 'api' ? ' — ' + (modelLabels[payload.image_model] || payload.image_model || 'flux-kontext-pro') : ''})`,
+    `<b>Imagens:</b> ${payload.image_count} (${imgSource[payload.image_source] || payload.image_source}${isApi ? ` — ${modelLabel}` : ''})`,
+  ];
+
+  if (isApi) {
+    lines.push(`<b>Marca nas imagens:</b> ${brandOverlay ? 'sim (cores e estilo da marca)' : 'não (estilo neutro)'}`);
+    lines.push(`<b>Fluxo:</b> gerar imagens → você aprova → montar criativos e vídeo`);
+  }
+
+  lines.push(
     `<b>Videos:</b> ${payload.video_count}`,
     `<b>Idioma:</b> ${payload.language}`,
-  ];
+  );
 
   if (skipFlags.length > 0) lines.push(`<b>Pular:</b> ${skipFlags.join(', ')}`);
 
-  lines.push(`\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`);
-  lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
+  if (isApi && payload.use_brand_overlay === undefined) {
+    // brand_overlay not explicitly set — ask
+    lines.push(`\n<b>A marca deve aparecer nas imagens geradas?</b>`);
+    lines.push(`Responda <b>sim com marca</b>, <b>sim sem marca</b>, ou <b>não</b> para cancelar.`);
+    lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
+    session.setPendingCampaign(chatId, { ...payload, _awaiting_brand_answer: true });
+  } else {
+    lines.push(`\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`);
+    lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
+    session.setPendingCampaign(chatId, payload);
+  }
 
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
 
-  // Send brief as separate message so it's never truncated
   if (payload.campaign_brief) {
     await ctx.reply(`<b>Brief:</b>\n${payload.campaign_brief}`, { parse_mode: 'HTML' });
   }
@@ -1029,7 +1078,7 @@ Return a JSON object with these fields:
   "image_formats": ["carousel_1080x1080", "story_1080x1920"],
   "video_count": 1,
   "image_source": "brand",
-  "image_model": "flux-kontext-pro",
+  "image_model": "${process.env.KIE_DEFAULT_MODEL || 'z-image'}",
   "campaign_brief": "full campaign brief in pt-BR summarizing the intent, audience, tone, key messages"
 }
 
@@ -1038,7 +1087,7 @@ Rules:
 - image_count: default 5 for carousel; use what user says
 - video_count: how many videos requested (default 1)
 - image_source: "brand" if user mentions brand images; "pexels" if free stock photos; "api" if paid AI image generation
-- image_model: only relevant when image_source is "api". Options: "flux-kontext-pro" (default, fast), "flux-kontext-max" (max quality), "gpt-image-1" (OpenAI style). Pick based on user's quality preference.
+- image_model: only relevant when image_source is "api". Default is ALWAYS "${process.env.KIE_DEFAULT_MODEL || 'z-image'}" (from .env). Only change if the user explicitly requests a different model. Options: "z-image", "z-image-turbo", "flux-kontext-pro", "flux-kontext-max", "gpt-image-1".
 - campaign_brief: comprehensive summary of everything the user described
 - Return ONLY the JSON object, no markdown, no explanation`;
 
@@ -1048,6 +1097,14 @@ Rules:
       const jsonMatch = stdout.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return callback(null);
       const payload = JSON.parse(jsonMatch[0]);
+
+      // Always use .env default model unless user explicitly named one in the text
+      const modelKeywords = ['z-image-turbo', 'flux-kontext-pro', 'flux-kontext-max', 'gpt-image-1', 'flux pro', 'flux max', 'gpt image'];
+      const userPickedModel = modelKeywords.some(k => text.toLowerCase().includes(k));
+      if (!userPickedModel) {
+        payload.image_model = process.env.KIE_DEFAULT_MODEL || 'z-image';
+      }
+
       callback(payload);
     } catch {
       callback(null);
@@ -1160,6 +1217,19 @@ function runPipeline(ctx, chatId, payload, outputDir) {
         const match = text.match(/Job failed:\s*(\S+)/);
         if (match) {
           ctx.reply(`Agente FALHOU: <code>${match[1]}</code>`, { parse_mode: 'HTML' });
+        }
+      }
+
+      // Image approval handshake
+      if (text.includes('[IMAGE_APPROVAL_NEEDED]')) {
+        const match = text.match(/\[IMAGE_APPROVAL_NEEDED\]\s*(\S+)/);
+        if (match) {
+          const approvalOutputDir = match[1];
+          ctx.reply('Imagens geradas! Enviando para sua aprovação...').then(() => {
+            sendImageApprovalRequest(ctx, chatId, approvalOutputDir).catch(e => {
+              console.error('Error sending image approval:', e.message);
+            });
+          });
         }
       }
 
@@ -1405,6 +1475,58 @@ Instructions:
 
 function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Image approval ───────────────────────────────────────────────────────────
+
+async function sendImageApprovalRequest(ctx, chatId, outputDir) {
+  const absImgsDir = path.join(PROJECT_ROOT, outputDir, 'imgs');
+  if (!fs.existsSync(absImgsDir)) {
+    writeImageApproval(outputDir, true);
+    return;
+  }
+
+  const imageExts = ['.jpg', '.jpeg', '.png', '.webp'];
+  const images = fs.readdirSync(absImgsDir)
+    .filter(f => imageExts.includes(path.extname(f).toLowerCase()) && f.startsWith('generated_'))
+    .sort()
+    .map(f => path.join(absImgsDir, f));
+
+  if (images.length === 0) {
+    writeImageApproval(outputDir, true);
+    return;
+  }
+
+  session.setPendingVideoApproval(chatId, { outputDir, type: 'images' });
+
+  await ctx.reply(
+    `🖼 <b>${images.length} imagens geradas — aprove antes de montar os criativos</b>\n\nEnviando uma por uma...`,
+    { parse_mode: 'HTML' }
+  );
+
+  for (const imgPath of images) {
+    try {
+      await ctx.replyWithPhoto(new (require('grammy').InputFile)(imgPath), {
+        caption: path.basename(imgPath),
+      });
+    } catch (e) {
+      await ctx.reply(`(não foi possível enviar ${path.basename(imgPath)})`);
+    }
+  }
+
+  await ctx.reply(
+    `Responda <b>sim</b> para usar estas imagens e continuar.\n` +
+    `<b>não</b> para cancelar.\n` +
+    `Ou descreva o que ajustar e vou regenerar.`,
+    { parse_mode: 'HTML' }
+  );
+}
+
+function writeImageApproval(outputDir, approved, feedback = null) {
+  const imgsDir = path.join(PROJECT_ROOT, outputDir, 'imgs');
+  fs.mkdirSync(imgsDir, { recursive: true });
+  const file = approved ? 'approved.json' : 'rejected.json';
+  fs.writeFileSync(path.join(imgsDir, file), JSON.stringify({ approved, feedback, ts: new Date().toISOString() }));
 }
 
 // ── Video storyboard formatter ───────────────────────────────────────────────

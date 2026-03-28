@@ -94,7 +94,115 @@ Verificar quais estão ativos: `npm run media:status`
 
 ---
 
-## Efeitos de Câmera nos Vídeos
+## Fluxo de Geração de Imagens
+
+Cada campanha define uma **fonte de imagens** (`image_source`) que controla como o sistema obtém as imagens para ads e vídeos.
+
+### Fontes disponíveis
+
+| Fonte | Parâmetro | Custo | Quando usar |
+|---|---|---|---|
+| Imagens da marca | `brand` | Grátis | Fotos e banners já existentes no projeto |
+| Fotos stock | `pexels` | Grátis | Fotos genéricas sem custo |
+| Geração por IA | `api` | Pago (~$0.004/img) | Imagens únicas e temáticas criadas para a campanha |
+
+---
+
+### Fluxo: `brand` — imagens da marca
+
+```
+Sistema lê imgs/ e assets/ do projeto (inclui subpastas: banners/, clips/)
+    ↓
+Cada imagem é classificada automaticamente:
+  - banner → imagem com texto/logo embutido (pasta banners/, ou nome contém "banner", "logo", etc.)
+  - clip   → arquivo de vídeo (.mp4, .mov)
+  - raw    → foto limpa sem texto
+    ↓
+Agente recebe lista com dimensões e tipo de cada imagem
+    ↓
+Agente escolhe a imagem certa para cada cena/slide baseado no conteúdo emocional
+    ↓
+Renderização respeita o tipo:
+  - banner → só redimensiona (letterbox), nunca recorta
+  - clip   → usa como fonte de vídeo diretamente, sem Ken Burns
+  - raw    → aplica efeito Ken Burns (zoom in/out, pan esquerda/direita)
+```
+
+---
+
+### Fluxo: `pexels` — fotos stock grátis
+
+```
+Agente faz busca na Pexels API com tema da campanha
+    ↓
+Baixa as fotos mais relevantes para outputs/<campanha>/imgs/
+    ↓
+Se a foto tiver texto visível → define image_type: "banner" (não recorta)
+Se for foto limpa → image_type: "raw" (pode aplicar Ken Burns)
+    ↓
+Renderiza normalmente
+```
+
+---
+
+### Fluxo: `api` — geração por IA (KIE)
+
+```
+Sistema lê brand_identity.md do projeto (cores, estilo, personalidade)
+    ↓
+Para cada imagem, monta um prompt rico com:
+  - Tema da campanha extraído do briefing
+  - Propósito da cena: hook / tension / solution / social_proof / cta
+  - Paleta de cores da marca (se use_brand_overlay: true)
+  - Palavras-chave de estilo visual
+  - Formato e orientação (1:1 para carousel, 9:16 para stories/vídeo)
+    ↓
+Envia para KIE API (modelo padrão: definido em KIE_DEFAULT_MODEL no .env)
+    ↓
+Aguarda geração (polling) e baixa para outputs/<campanha>/imgs/
+    ↓
+⏸ PAUSA — sistema envia imagens geradas para aprovação no Telegram
+    ↓
+Usuário responde:
+  "sim" → aprovado, segue para montagem
+  "não" → cancela
+  [texto] → feedback para re-geração
+    ↓
+Imagens aprovadas são usadas na montagem dos ads/vídeos
+```
+
+#### Modelos disponíveis (KIE)
+
+| Modelo | Velocidade | Qualidade | Quando usar |
+|---|---|---|---|
+| `z-image` | Rápida | Alta | Padrão — melhor equilíbrio |
+| `z-image-turbo` | Muito rápida | Boa | Testes, pré-visualizações |
+| `flux-kontext-pro` | Média | Muito alta | Campanhas com mais qualidade |
+| `flux-kontext-max` | Lenta | Máxima | Campanhas premium |
+| `gpt-image-1` | Média | Alta | Estilo mais realista/fotográfico |
+
+O modelo padrão é sempre lido do `.env` (`KIE_DEFAULT_MODEL`). Só muda se o usuário pedir outro explicitamente.
+
+#### Contexto de marca nas imagens
+
+Quando `use_brand_overlay: true` (padrão ao usar `api`):
+- O sistema lê `knowledge/brand_identity.md` do projeto
+- Extrai cores (#HEX), palavras-chave visuais, nome e personalidade da marca
+- Injeta tudo no prompt de geração → imagens saem com a identidade visual da marca
+
+---
+
+### Classificação de imagens
+
+Independente da fonte, toda imagem é classificada antes de ser usada:
+
+| Tipo | Critério de detecção | Tratamento no vídeo | Tratamento no ad |
+|---|---|---|---|
+| `banner` | Pasta `banners/`, nome contém "banner"/"logo"/"promo", ratio > 2.5 | Letterbox (sem crop, sem Ken Burns) | `object-fit: contain` |
+| `clip` | Extensão `.mp4`, `.mov`, `.webm` | Fonte de vídeo direta, trim por duração | Referenciado no layout.json |
+| `raw` | Todos os demais | Ken Burns (zoom/pan alternado por cena) | `object-fit: cover` com crop |
+
+---
 
 Movimentos aplicados sobre fotos de fundo simulando câmera cinematográfica:
 

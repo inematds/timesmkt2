@@ -18,9 +18,40 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const { generateImage, AVAILABLE_MODELS } = require('./generate-image-kie');
+const { generateImage, buildImagePrompt, readBrandContext, AVAILABLE_MODELS, DEFAULT_MODEL } = require('./generate-image-kie');
 
 // ── Asset discovery ────────────────────────────────────────────────────────────
+
+/**
+ * Classifies an image as 'banner' or 'raw'.
+ *
+ * Banners (ads, posters, logos, flyers) have fixed composition with embedded text
+ * and must NEVER be cropped — only resized/letterboxed.
+ * Raw photos (product shots, lifestyle, stock photos without text) can be cropped and
+ * used with Ken Burns motion effects.
+ *
+ * Detection strategy:
+ *   1. Filename keywords → banner
+ *   2. Aspect ratio extremes (very wide or very tall) → likely banner
+ *   3. Default → raw
+ */
+function detectImageType(imagePath, dims) {
+  const filename = path.basename(imagePath).toLowerCase();
+  const dirParts = imagePath.replace(/\\/g, '/').split('/');
+
+  // Any image inside a folder named "banners" is a banner
+  if (dirParts.some(p => p.toLowerCase() === 'banners')) return 'banner';
+
+  // Filename keywords → banner
+  const bannerKeywords = ['banner', 'logo', 'promo', 'header', 'cover', 'overlay',
+                          'poster', 'flyer', 'ad_', '_ad.', 'anuncio', 'capa', 'topo'];
+  if (bannerKeywords.some(k => filename.includes(k))) return 'banner';
+
+  // Very wide images (ratio > 2.5) are almost always banners
+  if (dims && dims.ratio > 2.5) return 'banner';
+
+  return 'raw';
+}
 
 /**
  * Returns image dimensions using ffprobe.
@@ -49,20 +80,36 @@ function getImageDimensions(imagePath) {
  */
 function getProjectAssets(projectDir) {
   const imageExts = ['.jpg', '.jpeg', '.png', '.webp'];
+  const videoExts = ['.mp4', '.mov', '.webm', '.avi'];
+  // Scan these directories; for each, also recurse one level into subdirectories
   const dirs = ['imgs', 'assets'];
   const files = [];
 
+  const scanDir = (fullDir) => {
+    if (!fs.existsSync(fullDir)) return;
+    const entries = fs.readdirSync(fullDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        // One level of recursion (e.g. imgs/banners/, imgs/clips/)
+        scanDir(path.join(fullDir, entry.name));
+      } else {
+        const ext = path.extname(entry.name).toLowerCase();
+        const absPath = path.join(fullDir, entry.name);
+        if (imageExts.includes(ext)) {
+          const dims = getImageDimensions(absPath);
+          const imageType = detectImageType(absPath, dims);
+          files.push({ path: absPath, imageType, ...dims });
+        } else if (videoExts.includes(ext)) {
+          // Video clips — mark as 'clip', no Ken Burns, renderer uses as video source
+          const dims = getImageDimensions(absPath); // ffprobe works on video too
+          files.push({ path: absPath, imageType: 'clip', ...dims });
+        }
+      }
+    }
+  };
+
   for (const dir of dirs) {
-    const fullDir = path.resolve(PROJECT_ROOT, projectDir, dir);
-    if (!fs.existsSync(fullDir)) continue;
-    const found = fs.readdirSync(fullDir)
-      .filter(f => imageExts.includes(path.extname(f).toLowerCase()))
-      .map(f => {
-        const absPath = path.resolve(fullDir, f);
-        const dims = getImageDimensions(absPath);
-        return { path: absPath, ...dims };
-      });
-    files.push(...found);
+    scanDir(path.resolve(PROJECT_ROOT, projectDir, dir));
   }
 
   return files;
@@ -76,9 +123,12 @@ function formatAssetList(assets) {
   if (!assets || assets.length === 0) return 'No brand assets found.';
   return assets.map(a => {
     const dimInfo = a.width
-      ? `  [${a.width}×${a.height}, ${a.orientation}, ratio ${a.ratio}]`
-      : '';
-    return `  - ${a.path}${dimInfo}`;
+      ? `  [${a.width}×${a.height}, ${a.orientation}, ratio ${a.ratio}, ${a.imageType || 'raw'}]`
+      : `  [${a.imageType || 'raw'}]`;
+    let typeNote = '';
+    if (a.imageType === 'banner') typeNote = '  ⚠️ BANNER — do not crop, only resize/letterbox';
+    else if (a.imageType === 'clip') typeNote = '  🎬 VIDEO CLIP — use directly as video source, no Ken Burns';
+    return `  - ${a.path}${dimInfo}${typeNote}`;
   }).join('\n');
 }
 
@@ -93,80 +143,67 @@ function assetPaths(assets) {
  * Generates images via KIE API for use as assets in ad creatives / video.
  * Returns assets array (same format as getProjectAssets) pointing to downloaded files.
  *
- * @param {string} outputDir  - relative output dir (e.g. prj/inema/outputs/task_2026-03-27)
- * @param {string} model      - KIE model id (default: flux-kontext-pro)
- * @param {number} count      - number of images to generate
- * @param {string[]} formats  - ['carousel_1080x1080', 'story_1080x1920']
- * @param {string} brief      - campaign brief used to build prompts
- * @param {string} brandContext - brand identity summary for the prompt
+ * @param {string} outputDir   - relative output dir
+ * @param {string} projectDir  - project dir for reading brand_identity.md
+ * @param {string} model       - KIE model id (default: z-image)
+ * @param {number} count       - number of images to generate
+ * @param {string[]} formats   - ['carousel_1080x1080', 'story_1080x1920']
+ * @param {string} brief       - campaign brief
+ * @param {boolean} useBrandOverlay - whether to include brand visual identity in prompt
+ * @param {string[]} scenePurposes  - optional array of scene types per image
  */
-async function generateApiImages(outputDir, model = 'flux-kontext-pro', count = 5, formats = ['carousel_1080x1080'], brief = '', brandContext = '') {
+async function generateApiImages(outputDir, projectDir, model = DEFAULT_MODEL, count = 5, formats = ['carousel_1080x1080'], brief = '', useBrandOverlay = true, scenePurposes = []) {
   const absImgsDir = path.resolve(PROJECT_ROOT, outputDir, 'imgs');
   fs.mkdirSync(absImgsDir, { recursive: true });
 
-  // Map format to KIE aspect ratio
   const formatToRatio = {
     'carousel_1080x1080': '1:1',
-    'story_1080x1920': '9:16',
-    'youtube_thumbnail': '16:9',
+    'story_1080x1920':    '9:16',
+    'reels_1080x1920':    '9:16',
+    'youtube_thumbnail':  '16:9',
   };
 
+  // Read brand context from brand_identity.md
+  const brand = useBrandOverlay ? readBrandContext(projectDir) : null;
+  if (brand) {
+    log(outputDir, 'api_image_gen', `Brand context loaded: ${brand.brandName} | colors: ${brand.colors.join(', ')}`);
+  }
+
+  const defaultSceneOrder = ['hook', 'tension', 'solution', 'social_proof', 'cta'];
   const assets = [];
   let imgIndex = 1;
 
-  // Distribute images across formats
   const formatList = [];
-  for (let i = 0; i < count; i++) {
-    formatList.push(formats[i % formats.length]);
-  }
+  for (let i = 0; i < count; i++) formatList.push(formats[i % formats.length]);
 
   for (const fmt of formatList) {
     const ratio = formatToRatio[fmt] || '1:1';
-    const ext = 'jpg';
-    const filename = `generated_${String(imgIndex).padStart(2, '0')}_${fmt}.${ext}`;
+    const filename = `generated_${String(imgIndex).padStart(2, '0')}_${fmt}.jpg`;
     const outputPath = path.join(absImgsDir, filename);
+    const sceneType = scenePurposes[imgIndex - 1] || defaultSceneOrder[(imgIndex - 1) % defaultSceneOrder.length];
 
     if (fs.existsSync(outputPath)) {
-      log(outputDir, 'api_image_gen', `Image already exists, skipping: ${filename}`);
+      log(outputDir, 'api_image_gen', `Already exists, skipping: ${filename}`);
     } else {
-      // Build a focused prompt from brief + brand context
-      const prompt = buildImagePrompt(brief, brandContext, fmt, imgIndex, count);
-      log(outputDir, 'api_image_gen', `Generating image ${imgIndex}/${count}: ${filename} (${model}, ${ratio})`);
+      const prompt = buildImagePrompt(brief, brand, fmt, imgIndex, count, sceneType);
+      log(outputDir, 'api_image_gen', `Generating ${imgIndex}/${count}: ${filename} [${sceneType}] (${model}, ${ratio})`);
+      log(outputDir, 'api_image_gen', `Prompt: ${prompt.slice(0, 200)}`);
 
       try {
         await generateImage(outputPath, prompt, model, ratio);
       } catch (err) {
-        log(outputDir, 'api_image_gen', `Image ${imgIndex} generation failed: ${err.message}`);
+        log(outputDir, 'api_image_gen', `Failed image ${imgIndex}: ${err.message}`);
         imgIndex++;
         continue;
       }
     }
 
     const dims = getImageDimensions(outputPath);
-    assets.push({ path: outputPath, ...dims });
+    assets.push({ path: outputPath, sceneType, ...dims });
     imgIndex++;
   }
 
   return assets;
-}
-
-/**
- * Builds a descriptive image generation prompt for a marketing ad.
- */
-function buildImagePrompt(brief, brandContext, format, index, total) {
-  const isStory = format.includes('1920');
-  const orientation = isStory ? 'vertical portrait' : 'square';
-  const position = index === 1 ? 'opening hook' : index === total ? 'call to action' : `scene ${index} of ${total}`;
-
-  return [
-    `Professional marketing advertisement photo, ${orientation} format.`,
-    brief ? `Campaign: ${brief.slice(0, 200)}` : '',
-    brandContext ? `Brand: ${brandContext.slice(0, 150)}` : '',
-    `Scene purpose: ${position}.`,
-    'High quality, cinematic lighting, emotional and aspirational tone.',
-    'No text, no logos, no watermarks.',
-    'Suitable for social media advertising.',
-  ].filter(Boolean).join(' ');
 }
 
 /**
@@ -331,16 +368,35 @@ Each story has one bold key message with large text.`;
   // ── Pre-generate images via API if image_source === 'api' ──────────────────
   let apiGeneratedAssets = [];
   if (image_source === 'api') {
-    const model = job.data.image_model || 'flux-kontext-pro';
-    log(output_dir, 'ad_creative_designer', `Generating ${image_count} images via KIE API (${model})...`);
+    const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
+    const useBrand = job.data.use_brand_overlay !== false;
+    log(output_dir, 'ad_creative_designer', `Generating ${image_count} images via KIE API (${model}, brand=${useBrand})...`);
     try {
       apiGeneratedAssets = await generateApiImages(
-        output_dir, model, image_count, image_formats, campaign_brief,
-        '' // brand context will be read by agent from brand_identity.md
+        output_dir, project_dir, model, image_count, image_formats, campaign_brief, useBrand
       );
-      log(output_dir, 'ad_creative_designer', `Generated ${apiGeneratedAssets.length} images via API → ${output_dir}/imgs/`);
+      log(output_dir, 'ad_creative_designer', `Generated ${apiGeneratedAssets.length} images → ${output_dir}/imgs/`);
     } catch (err) {
       log(output_dir, 'ad_creative_designer', `API image generation failed: ${err.message}. Falling back to CSS-only layouts.`);
+    }
+
+    // Signal bot to show generated images for approval before proceeding
+    if (apiGeneratedAssets.length > 0) {
+      const approvalPath = path.resolve(PROJECT_ROOT, output_dir, 'imgs', 'approved.json');
+      const rejectedPath = path.resolve(PROJECT_ROOT, output_dir, 'imgs', 'rejected.json');
+      process.stdout.write(`[IMAGE_APPROVAL_NEEDED] ${output_dir}\n`);
+      log(output_dir, 'ad_creative_designer', '[IMAGE_APPROVAL_NEEDED] Waiting for user to approve generated images...');
+
+      const imgApproved = await waitForFile(approvalPath, 1800000);
+      if (!imgApproved) {
+        if (fs.existsSync(rejectedPath)) {
+          log(output_dir, 'ad_creative_designer', 'User rejected generated images. Stopping.');
+          return { status: 'skipped', reason: 'images rejected' };
+        }
+        log(output_dir, 'ad_creative_designer', 'Image approval timeout. Proceeding anyway.');
+      } else {
+        log(output_dir, 'ad_creative_designer', 'Images approved. Proceeding to creative assembly.');
+      }
     }
   }
 
@@ -380,7 +436,9 @@ CRITICAL IMAGE RULES:
 - Do NOT use solid colored boxes as backgrounds — use the real brand photos
 - Choose the most contextually relevant image for each slide (different image per slide)
 - Apply CSS: semi-transparent overlays, gradients, blur effects ON TOP of real images
-- Text must be readable — use text-shadow, backdrop-filter blur, or dark overlay bands`;
+- Text must be readable — use text-shadow, backdrop-filter blur, or dark overlay bands
+- ⚠️ BANNER images (marked [banner] in the list): use object-fit: contain, never object-fit: cover — the full image must be visible, no cropping
+- 🎬 VIDEO CLIPS (marked [clip] in the list): reference the clip path in layout.json but do NOT embed in HTML — note it for the Distribution Agent`;
   }
 
   const prompt = `You are the Ad Creative Designer. Follow the skill defined in skills/ad-creative-designer/SKILL.md for brand guidelines, but adapt the output format as instructed below.
@@ -513,12 +571,15 @@ AUDIO: ElevenLabs not configured. Generate silent videos. Narration scripts only
   // ── Pre-generate images via API if image_source === 'api' ──────────────────
   let apiGeneratedAssetsVideo = [];
   if (image_source === 'api') {
-    const model = job.data.image_model || 'flux-kontext-pro';
-    const videoImgCount = video_count * 5; // ~5 scenes per video
-    log(output_dir, 'video_ad_specialist', `Generating ${videoImgCount} images via KIE API (${model}) for video scenes...`);
+    const model = job.data.image_model || process.env.KIE_DEFAULT_MODEL || DEFAULT_MODEL;
+    const useBrand = job.data.use_brand_overlay !== false;
+    const videoImgCount = video_count * 5;
+    const videoScenes = ['hook', 'tension', 'solution', 'social_proof', 'cta'];
+    const scenePurposes = Array.from({ length: videoImgCount }, (_, i) => videoScenes[i % videoScenes.length]);
+    log(output_dir, 'video_ad_specialist', `Generating ${videoImgCount} images via KIE API (${model}, brand=${useBrand})...`);
     try {
       apiGeneratedAssetsVideo = await generateApiImages(
-        output_dir, model, videoImgCount, ['story_1080x1920'], campaign_brief, ''
+        output_dir, project_dir, model, videoImgCount, ['story_1080x1920'], campaign_brief, useBrand, scenePurposes
       );
       log(output_dir, 'video_ad_specialist', `Generated ${apiGeneratedAssetsVideo.length} images → ${output_dir}/imgs/`);
     } catch (err) {
@@ -553,6 +614,8 @@ STEP 2 — Image source: PEXELS STOCK PHOTOS
   Header: Authorization: ${pexelsKey}
 - Download the best matching photo for each scene to ${output_dir}/imgs/scene_0N.jpg
 - Use the downloaded absolute path as the scene "image" field
+- Set "image_type": "raw" for clean stock photos (no text visible in the image)
+- If a stock photo has visible text, credits, or watermarks, set "image_type": "banner" — renderer will letterbox it instead of cropping
 - Choose photos that match the scene's emotional context (hook=dramatic, cta=warm/inviting)`;
   } else {
     // brand (default) — include metadata so agent can make smart decisions
@@ -571,7 +634,10 @@ IMAGE ANALYSIS RULES (mandatory before building scene plan):
   • solution/benefit → product, community, positive outcome images
   • cta → clearest, most inviting image — brand logo visible if possible
 - Never assign the same image to two scenes
-- Prefer portrait-oriented images for 1080×1920 format (they need less cropping)`;
+- Prefer portrait-oriented images for 1080×1920 format (they need less cropping)
+- ⚠️ BANNER images (marked [banner] above): set "image_type": "banner" in the scene — renderer will only resize/letterbox, never crop or apply Ken Burns motion
+- 🎬 VIDEO CLIPS (marked [clip] above): set "image_type": "clip" in the scene — renderer uses clip directly as video input, no static image processing
+- Raw photos (marked [raw]): set "image_type": "raw" — renderer will apply Ken Burns zoom/pan effects`;
   }
 
   // ── PHASE 1: Generate scene plans only (no rendering yet) ──────────────────
@@ -606,6 +672,7 @@ STEP 4 — For EACH video, create a scene plan JSON and save to ${output_dir}/vi
       "duration": 3,
       "type": "hook",
       "image": "<absolute path or null>",
+      "image_type": "raw",
       "image_crop_focus": "center-top",
       "text_overlay": "Max 6 words here",
       "narration": "This scene's narration line"
@@ -613,8 +680,10 @@ STEP 4 — For EACH video, create a scene plan JSON and save to ${output_dir}/vi
   ]
 }
 
+image_type: "raw" (default — can crop/zoom with Ken Burns) | "banner" (has embedded text — only resize, never crop) | "clip" (video file — use as video source)
 image_crop_focus options: "center", "center-top", "center-bottom", "left", "right"
-Use this to tell the renderer where to anchor the crop when the image needs to be cropped to fit.
+Use image_type from the asset list (shown as [banner], [clip], or [raw]). Never crop banners.
+Use image_crop_focus to anchor the crop when image_type is "raw" and cropping is needed.
 
 SCENE DESIGN RULES:
 - text_overlay: MAX 6 words — short, punchy
