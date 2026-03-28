@@ -397,24 +397,65 @@ Threads: manual (sem API pública)
 ## Estrutura do Projeto
 
 ```
-timesmkt/
-├── assets/                  # Imagens da marca (fotos de produto)
-├── knowledge/               # Identidade, guidelines, briefing
-├── skills/                  # Definições dos 5 agentes + media-help
-├── media/                   # Módulo multi-provider (imagem, voz, SFX, música)
-├── pipeline/                # Orquestrador, worker, render de vídeo
-│   ├── orchestrator.js      # Enfileira jobs no BullMQ
-│   ├── worker.js            # Executa agentes via Claude CLI
-│   ├── render-video.js      # Renderiza vídeo com Remotion
-│   └── payloads/            # JSONs de campanha
-├── remotion-ad/             # Projeto Remotion (vídeo)
-│   ├── src/DynamicAd.tsx    # Composição dinâmica
-│   ├── src/scenes/          # Cenas por tipo
-│   ├── src/components/      # CameraMotion, TextOverlay, etc.
-│   └── public/              # Assets e áudios
-├── outputs/                 # Campanhas geradas
-├── .env.example             # Template de variáveis
-└── CLAUDE.md                # Documentação técnica completa
+timesmkt2/
+├── prj/                             # Projetos (um por cliente/marca)
+│   ├── coldbrew-coffee-co/          # Projeto demo
+│   │   ├── assets/                  # Fotos de produto e mídia da marca
+│   │   ├── imgs/                    # Imagens de campanha
+│   │   │   └── banners/             # Banners com texto (nunca recortados)
+│   │   ├── knowledge/               # brand_identity.md, product_campaign.md, platform_guidelines.md
+│   │   └── outputs/                 # Campanhas geradas
+│   │       └── <campanha>_<data>/   # Uma pasta por campanha
+│   │           ├── ads/             # Imagens e HTMLs gerados
+│   │           ├── video/           # Vídeos e scene plans
+│   │           ├── copy/            # Textos por plataforma
+│   │           ├── audio/           # Narrações geradas
+│   │           ├── imgs/            # Imagens geradas via API
+│   │           ├── logs/            # Log por agente
+│   │           └── Publish *.md     # Guia de publicação
+│   └── inema/                       # Exemplo de segundo projeto
+│       ├── assets/                  # Fotos e mídia
+│       ├── imgs/
+│       │   └── banners/             # Banners da marca
+│       └── knowledge/
+│
+├── pipeline/                        # Orquestração e renderização
+│   ├── orchestrator.js              # Enfileira jobs no BullMQ
+│   ├── worker.js                    # Executa agentes via Claude CLI (com gate de dependências)
+│   ├── render-video-ffmpeg.js       # Renderiza vídeo com ffmpeg (Ken Burns, letterbox)
+│   ├── render-video.js              # Renderiza vídeo com Remotion
+│   ├── generate-image-kie.js        # Geração de imagens via KIE API (brand-aware)
+│   ├── generate-audio.js            # Geração de narração via ElevenLabs
+│   ├── supabase-upload.js           # Upload de mídia para Supabase Storage
+│   ├── publish_now.js               # Publicação via APIs (Instagram, YouTube)
+│   ├── queues.js / redis.js         # Configuração BullMQ + Redis
+│   └── payloads/                    # JSONs de campanha de exemplo
+│
+├── telegram/                        # Interface do bot Telegram
+│   ├── bot.js                       # Comandos, fluxo de campanha, aprovações
+│   ├── session.js                   # Sessão por chat (projeto ativo, pendentes)
+│   ├── formatter.js                 # Formatação de mensagens HTML
+│   ├── media.js                     # Envio de mídia
+│   └── config.js                    # Configuração do bot
+│
+├── skills/                          # Skills dos 5 agentes
+│   ├── orchestrator/SKILL.md
+│   ├── marketing-research-agent/SKILL.md
+│   ├── ad-creative-designer/SKILL.md
+│   ├── video-ad-specialist/SKILL.md
+│   ├── copywriter-agent/SKILL.md
+│   └── distribution-agent/SKILL.md
+│
+├── media/                           # Módulo multi-provider (imagem, voz, SFX)
+├── remotion-ad/                     # Projeto Remotion (renderização de vídeo alternativa)
+│   ├── src/DynamicAd.tsx
+│   ├── src/scenes/
+│   └── src/components/
+│
+├── doc/                             # Documentação e referências
+├── .env                             # Variáveis de ambiente (não versionado)
+├── .env.example                     # Template de variáveis
+└── CLAUDE.md                        # Documentação técnica completa da arquitetura
 ```
 
 ---
