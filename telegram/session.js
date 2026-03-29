@@ -6,7 +6,7 @@
 // Map<chatId, { projectDir, runningTask, ... }>
 const sessions = new Map();
 
-const DEFAULT_PROJECT = 'prj/coldbrew-coffee-co';
+const DEFAULT_PROJECT = 'prj/inema';
 const MAX_HISTORY = 20;
 
 function get(chatId) {
@@ -123,6 +123,16 @@ function clearPendingCampaign(chatId) {
   s.pendingCampaign = null;
 }
 
+function setPendingRerun(chatId, data) {
+  const s = get(chatId);
+  s.pendingRerun = data;
+}
+
+function clearPendingRerun(chatId) {
+  const s = get(chatId);
+  s.pendingRerun = null;
+}
+
 function setPhotoTarget(chatId, destination, folder) {
   const s = get(chatId);
   s.photoTarget = { destination, folder };
@@ -165,6 +175,7 @@ module.exports = {
   addToHistory, getHistory, clearHistory,
   setPhotoTarget,
   setPendingCampaign, clearPendingCampaign,
+  setPendingRerun, clearPendingRerun,
   setPendingVideoApproval, clearPendingVideoApproval,
   setPendingImageError, clearPendingImageError,
   setCampaignV3, getCampaignV3, updateCampaignV3Stage, setCampaignV3Stage,

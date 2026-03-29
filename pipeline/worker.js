@@ -2460,8 +2460,10 @@ const worker = new Worker(
       throw new Error(`No handler registered for agent: ${agentName}`);
     }
 
-    // Wait for dependencies before running
-    await waitForDependencies(job);
+    // Wait for dependencies before running (skip in rerun mode)
+    if (!job.data.skip_dependencies) {
+      await waitForDependencies(job);
+    }
 
     await job.updateProgress(0);
     log(job.data.output_dir, agentName, `Starting ${agentName}...`);

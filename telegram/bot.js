@@ -67,6 +67,7 @@ bot.command('start', async (ctx) => {
     `/status — ver status do pipeline\n` +
     `/outputs — listar campanhas geradas\n` +
     `/enviar &lt;pasta&gt; — receber arquivos da campanha\n` +
+    `/rerun &lt;campanha&gt; &lt;etapas&gt; — reprocessar etapas\n` +
     `/modos [etapa] [humano|agente|auto] — modos de aprovacao\n` +
     `/fix &lt;descricao&gt; — corrigir algo no sistema\n` +
     `/novochat — limpar historico\n` +
@@ -660,39 +661,49 @@ bot.command('status', async (ctx) => {
     );
   }
 
-  const agents = [
-    'research_agent',
-    'creative_director',
-    'ad_creative_designer',
-    'copywriter_agent',
-    'video_ad_specialist',
-    'motion_director',
-    'distribution_agent',
-  ];
+  const stageAgents = {
+    '1 Brief & Narrativa': ['research_agent', 'creative_director', 'copywriter_agent'],
+    '2 Imagens': ['ad_creative_designer'],
+    '3 Video': ['video_quick', 'video_pro'],
+    '4 Plataformas': ['platform_instagram', 'platform_youtube', 'platform_tiktok', 'platform_facebook', 'platform_threads', 'platform_linkedin'],
+    '5 Distribuicao': ['distribution_agent'],
+  };
 
-  const lines = agents.map(a => {
-    const logFile = path.join(logsDir, `${a}.log`);
-    if (!fs.existsSync(logFile)) return `  ${a}: aguardando`;
+  const lines = [];
+  for (const [stageName, agents] of Object.entries(stageAgents)) {
+    const agentStatuses = agents.map(a => {
+      const logFile = path.join(logsDir, `${a}.log`);
+      if (!fs.existsSync(logFile)) return null;
+      const content = fs.readFileSync(logFile, 'utf-8');
+      let status = 'em progresso';
+      if (content.includes('Completed successfully')) status = '✅';
+      else if (content.includes('FAILED')) status = '❌';
+      else if (content.includes('Invoking Claude')) status = '⏳';
+      return `    ${a}: ${status}`;
+    }).filter(Boolean);
 
-    const content = fs.readFileSync(logFile, 'utf-8');
-    if (content.includes('Completed successfully')) return `  ${a}: completo`;
-    if (content.includes('FAILED')) return `  ${a}: FALHOU`;
-    if (content.includes('Invoking Claude')) return `  ${a}: rodando...`;
-    return `  ${a}: em progresso`;
-  });
+    if (agentStatuses.length > 0) {
+      lines.push(`<b>${stageName}</b>`);
+      lines.push(...agentStatuses);
+    }
+  }
+
+  if (lines.length === 0) lines.push('Aguardando inicio dos agentes...');
 
   const cv = s.campaignV3;
   let approvalStatus = '';
   if (cv?.pendingApproval) {
-    const stageLabels = { 1: 'Brief & Narrativa', 2: 'Visuais (Imagens & Vídeo)', 3: 'Copy de Plataforma', 4: 'Distribuição' };
-    approvalStatus = `\n⏳ <b>Aguardando aprovação — Etapa ${cv.pendingApproval.stage}: ${stageLabels[cv.pendingApproval.stage] || ''}</b>`;
+    const stageLabels = { 1: 'Brief & Narrativa', 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuicao' };
+    approvalStatus = `\n⏳ <b>Aprovacao pendente — Etapa ${cv.pendingApproval.stage}: ${stageLabels[cv.pendingApproval.stage] || ''}</b>`;
   }
 
+  const rerunInfo = s.runningTask?.rerun ? '\n🔄 <i>Reprocessamento</i>' : '';
+
   await ctx.reply(
-    `<b>Pipeline: ${s.runningTask.taskName}</b>\n` +
+    `<b>Pipeline: ${s.runningTask.taskName}</b>${rerunInfo}\n` +
     `Iniciado: ${s.runningTask.startedAt}` +
     approvalStatus + '\n\n' +
-    `<pre>${lines.join('\n')}</pre>`,
+    lines.join('\n'),
     { parse_mode: 'HTML' }
   );
 });
@@ -880,6 +891,152 @@ bot.command('novochat', async (ctx) => {
   await ctx.reply('Historico limpo. Nova conversa iniciada.');
 });
 
+// ── Rerun helpers ────────────────────────────────────────────────────────────
+
+function findCampaign(projectDir, query) {
+  const outputsDir = path.resolve(PROJECT_ROOT, projectDir, 'outputs');
+  if (!fs.existsSync(outputsDir)) return null;
+  const folders = fs.readdirSync(outputsDir).sort();
+  const q = query.toLowerCase().replace(/^c0*/, 'c');
+  const exact = folders.find(f => f === query);
+  if (exact) return exact;
+  return folders.find(f => f.toLowerCase().replace(/^c0*/, 'c').startsWith(q) || f.toLowerCase().includes(query.toLowerCase())) || null;
+}
+
+function resolveStageAlias(alias) {
+  const map = {
+    'brief': 1, 'narrativa': 1, 'pesquisa': 1, 'research': 1, 'estrategia': 1,
+    'imagens': 2, 'imagem': 2, 'ads': 2, 'carousel': 2, 'carrossel': 2, 'designer': 2,
+    'video': 3, 'videos': 3, 'quick': 3, 'pro': 3,
+    'plataformas': 4, 'plataforma': 4, 'instagram': 4, 'youtube': 4, 'tiktok': 4, 'facebook': 4, 'threads': 4, 'linkedin': 4, 'copy': 4,
+    'distribuicao': 5, 'publicar': 5, 'publish': 5,
+    '1': 1, '2': 2, '3': 3, '4': 4, '5': 5,
+  };
+  return map[alias.toLowerCase()] || null;
+}
+
+function detectProjectFromText(text, currentProjectDir) {
+  const prjDir = path.join(PROJECT_ROOT, 'prj');
+  if (!fs.existsSync(prjDir)) return currentProjectDir;
+  const projects = fs.readdirSync(prjDir);
+  const lower = text.toLowerCase();
+  for (const p of projects) {
+    if (lower.includes(p.toLowerCase())) return `prj/${p}`;
+  }
+  return currentProjectDir;
+}
+
+function findCampaignAcrossProjects(query) {
+  const prjRoot = path.join(PROJECT_ROOT, 'prj');
+  if (!fs.existsSync(prjRoot)) return null;
+  for (const prj of fs.readdirSync(prjRoot)) {
+    const found = findCampaign(`prj/${prj}`, query);
+    if (found) return { projectDir: `prj/${prj}`, campaignFolder: found };
+  }
+  return null;
+}
+
+// ── /rerun ───────────────────────────────────────────────────────────────────
+
+bot.command('rerun', async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const s = session.get(chatId);
+
+  if (s.runningTask) {
+    return ctx.reply('Ja existe um pipeline rodando. Use /status para acompanhar.');
+  }
+
+  const raw = ctx.match?.trim();
+  if (!raw) {
+    return ctx.reply(
+      '<b>/rerun — Reprocessar etapas de campanha existente</b>\n\n' +
+      'Uso: <code>/rerun &lt;campanha&gt; &lt;etapas&gt;</code>\n\n' +
+      'Exemplos:\n' +
+      '<code>/rerun c12 imagens</code>\n' +
+      '<code>/rerun c12 imagens,video</code>\n' +
+      '<code>/rerun c12 2,3,4</code>',
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  const args = raw.split(/\s+/);
+  const campaignQuery = args[0];
+  const stageArgs = args.slice(1).join(',').split(',').map(x => x.trim()).filter(Boolean);
+
+  // Find campaign: try active project, then all projects
+  let projectDir = s.projectDir;
+  let campaignFolder = findCampaign(projectDir, campaignQuery);
+
+  if (!campaignFolder) {
+    const result = findCampaignAcrossProjects(campaignQuery);
+    if (result) {
+      projectDir = result.projectDir;
+      campaignFolder = result.campaignFolder;
+    }
+  }
+
+  if (!campaignFolder) {
+    return ctx.reply(`Campanha "${campaignQuery}" nao encontrada em nenhum projeto.`);
+  }
+
+  if (projectDir !== s.projectDir) {
+    session.setProject(chatId, projectDir);
+  }
+
+  const outputDir = `${projectDir}/outputs/${campaignFolder}`;
+  const absOutputDir = path.resolve(PROJECT_ROOT, outputDir);
+
+  // Resolve stages
+  if (stageArgs.length === 0) {
+    return ctx.reply('Especifique quais etapas. Ex: <code>/rerun c12 imagens,video</code>', { parse_mode: 'HTML' });
+  }
+
+  const stageNumbers = [...new Set(stageArgs.map(resolveStageAlias).filter(Boolean))].sort();
+  if (stageNumbers.length === 0) {
+    return ctx.reply('Etapas nao reconhecidas. Use: brief, imagens, video, plataformas, distribuicao (ou 1-5).');
+  }
+
+  // Read existing brief
+  let briefData = {};
+  const briefPath = path.join(absOutputDir, 'creative', 'creative_brief.json');
+  if (fs.existsSync(briefPath)) {
+    try { briefData = JSON.parse(fs.readFileSync(briefPath, 'utf-8')); } catch {}
+  }
+
+  const payload = {
+    task_name: campaignFolder,
+    task_date: new Date().toISOString().slice(0, 10),
+    project_dir: projectDir,
+    output_dir: outputDir,
+    platform_targets: briefData.platforms || ['instagram'],
+    language: 'pt-BR',
+    image_count: 5,
+    image_formats: ['carousel_1080x1080', 'story_1080x1920'],
+    video_count: 1,
+    image_source: 'api',
+    image_model: process.env.KIE_DEFAULT_MODEL || 'z-image',
+    use_brand_overlay: true,
+    campaign_brief: briefData.campaign_angle || '',
+    video_mode: 'quick',
+    approval_modes: { stage1: 'auto', stage2: 'auto', stage3: 'auto', stage4: 'auto', stage5: 'auto' },
+    notifications: true,
+    skip_dependencies: true,
+  };
+
+  const stageLabels = { 1: 'Brief & Narrativa', 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuicao' };
+  const stageList = stageNumbers.map(n => `  <b>${n}.</b> ${stageLabels[n]}`).join('\n');
+
+  await ctx.reply(
+    `<b>Reprocessar: ${campaignFolder}</b>\n` +
+    `Projeto: <code>${projectDir}</code>\n\n` +
+    `Etapas:\n${stageList}\n\n` +
+    `Responda <b>sim</b> para iniciar.`,
+    { parse_mode: 'HTML' }
+  );
+
+  session.setPendingRerun(chatId, { payload, stages: stageNumbers, campaignFolder });
+});
+
 // ── Free text → campaign confirmation or Claude conversation ─────────────────
 
 bot.on('message:text', async (ctx) => {
@@ -978,6 +1135,118 @@ Keep the same JSON structure. Only modify what the feedback requests.`;
     }
   }
 
+  // ── Confirmation replies for pending rerun ──────────────────────────────
+  if (s.pendingRerun) {
+    const lower = text.toLowerCase().trim();
+    const isConfirm = /^(sim|ok|confirmar|confirma|aprovado|aprovar|vai|bora|yes|roda)/.test(lower);
+    const isCancel  = /^(nao|não|cancela|cancelar|cancel|para|parar|no\b)/.test(lower);
+
+    if (isConfirm) {
+      const { payload, stages, campaignFolder } = s.pendingRerun;
+      session.clearPendingRerun(chatId);
+
+      session.setRunningTask(chatId, {
+        taskName: campaignFolder,
+        taskDate: payload.task_date,
+        outputDir: payload.output_dir,
+        startedAt: new Date().toISOString(),
+        rerun: true,
+      });
+
+      const stageLabels = { 1: 'Brief', 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuicao' };
+      const label = stages.map(n => stageLabels[n]).join(' + ');
+      await ctx.reply(`Reprocessando <b>${campaignFolder}</b> — ${label}...`, { parse_mode: 'HTML' });
+
+      // Run each requested stage sequentially
+      const runRerunStages = async () => {
+        for (const stageNum of stages) {
+          const stageKey = `stage${stageNum}`;
+          const agentNames = STAGES[stageKey];
+          if (!agentNames) continue;
+
+          await ctx.reply(`Etapa ${stageNum}/5 — ${stageLabels[stageNum]}...`).catch(() => {});
+
+          // Spawn worker for this stage
+          const worker = spawn('node', ['pipeline/worker.js'], {
+            cwd: PROJECT_ROOT,
+            env: { ...process.env },
+          });
+
+          await _enqueueStage(payload, agentNames);
+
+          // Wait for worker to finish all jobs
+          await new Promise((resolve) => {
+            let jobsDone = 0;
+            const expected = agentNames.length;
+            worker.stdout.on('data', (d) => {
+              const txt = d.toString();
+              console.log('[rerun]', txt.slice(0, 200));
+
+              // Auto-approve internal gates
+              if (txt.includes('[IMAGE_APPROVAL_NEEDED]')) {
+                const match = txt.match(/\[IMAGE_APPROVAL_NEEDED\]\s*(\S+)/);
+                if (match) {
+                  const ap = path.resolve(PROJECT_ROOT, match[1], 'imgs', 'approved.json');
+                  fs.mkdirSync(path.dirname(ap), { recursive: true });
+                  fs.writeFileSync(ap, JSON.stringify({ approved: true, by: 'rerun', ts: Date.now() }));
+                }
+              }
+              if (txt.includes('[VIDEO_APPROVAL_NEEDED]')) {
+                const match = txt.match(/\[VIDEO_APPROVAL_NEEDED\]\s*(\S+)/);
+                if (match) {
+                  const ap = path.resolve(PROJECT_ROOT, match[1], 'video', 'approved.json');
+                  fs.mkdirSync(path.dirname(ap), { recursive: true });
+                  fs.writeFileSync(ap, JSON.stringify({ approved: true, by: 'rerun', ts: Date.now() }));
+                }
+              }
+
+              // Track completions
+              if (txt.includes('Job completed:')) jobsDone++;
+              if (txt.includes('Job failed:')) jobsDone++;
+              if (jobsDone >= expected) {
+                worker.kill('SIGTERM');
+                resolve();
+              }
+
+              // Send images live
+              if (txt.includes('[STAGE2_IMAGE_READY]')) {
+                const match = txt.match(/\[STAGE2_IMAGE_READY\]\s*\S+\s+(\S+)/);
+                if (match && fs.existsSync(match[1])) {
+                  bot.api.sendPhoto(chatId, new InputFile(match[1]), { caption: path.basename(match[1]) }).catch(() => {});
+                }
+              }
+            });
+
+            worker.stderr.on('data', (d) => {
+              const txt = d.toString();
+              if (txt.includes('Error')) console.error('[rerun stderr]', txt.slice(0, 200));
+            });
+
+            // Timeout 30 min per stage
+            setTimeout(() => { worker.kill('SIGTERM'); resolve(); }, 1800000);
+          });
+        }
+
+        session.clearRunningTask(chatId);
+        await bot.api.sendMessage(chatId, `Reprocessamento de <b>${campaignFolder}</b> concluido!`, { parse_mode: 'HTML' }).catch(() => {});
+      };
+
+      runRerunStages().catch(e => {
+        console.error('[rerun error]', e.message);
+        session.clearRunningTask(chatId);
+        bot.api.sendMessage(chatId, `Erro no reprocessamento: ${e.message}`).catch(() => {});
+      });
+
+      return;
+    }
+
+    if (isCancel) {
+      session.clearPendingRerun(chatId);
+      await ctx.reply('Reprocessamento cancelado.');
+      return;
+    }
+  }
+
   // ── Confirmation replies for pending campaign ───────────────────────────
   if (s.pendingCampaign) {
     const lower = text.toLowerCase().trim();
@@ -1032,6 +1301,74 @@ Keep the same JSON structure. Only modify what the feedback requests.`;
           showCampaignConfirmation(ctx, chatId, payload);
         }
       });
+      return;
+    }
+  }
+
+  // ── Detect rerun intent in free text ─────────────────────────────────
+  const rerunKeywords = /\b(recri[ae]|refaz|refazer|reprocessa|re-?run|gera? novas?|nova vers[ãa]o|outra vers[ãa]o|recriar)\b/i;
+  const campaignRef = text.match(/\b(c\d{1,4})\b/i);
+  if (rerunKeywords.test(text) && campaignRef && !s.runningTask && !s.processing) {
+    let rerunProjectDir = detectProjectFromText(text, s.projectDir);
+    let campaignFolder = findCampaign(rerunProjectDir, campaignRef[1]);
+
+    // Search all projects if not found
+    if (!campaignFolder) {
+      const prjRoot = path.join(PROJECT_ROOT, 'prj');
+      if (fs.existsSync(prjRoot)) {
+        for (const prj of fs.readdirSync(prjRoot)) {
+          const found = findCampaign(`prj/${prj}`, campaignRef[1]);
+          if (found) { rerunProjectDir = `prj/${prj}`; campaignFolder = found; break; }
+        }
+      }
+    }
+
+    if (rerunProjectDir !== s.projectDir) session.setProject(chatId, rerunProjectDir);
+
+    if (campaignFolder) {
+      // Detect which stages from the text
+      const stageAliases = text.toLowerCase().split(/[\s,]+/).map(resolveStageAlias).filter(Boolean);
+      const stages = stageAliases.length > 0 ? [...new Set(stageAliases)].sort() : [2]; // default: imagens
+
+      const outputDir = `${rerunProjectDir}/outputs/${campaignFolder}`;
+      const absOutputDir = path.resolve(PROJECT_ROOT, outputDir);
+      const briefPath = path.join(absOutputDir, 'creative', 'creative_brief.json');
+      let briefData = {};
+      if (fs.existsSync(briefPath)) {
+        try { briefData = JSON.parse(fs.readFileSync(briefPath, 'utf-8')); } catch {}
+      }
+
+      const payload = {
+        task_name: campaignFolder,
+        task_date: new Date().toISOString().slice(0, 10),
+        project_dir: rerunProjectDir,
+        output_dir: outputDir,
+        platform_targets: briefData.platforms || ['instagram', 'youtube', 'threads', 'facebook', 'tiktok', 'linkedin'],
+        language: 'pt-BR',
+        image_count: 5,
+        image_formats: ['carousel_1080x1080', 'story_1080x1920'],
+        video_count: 1,
+        image_source: 'api',
+        image_model: process.env.KIE_DEFAULT_MODEL || (process.env.IMAGE_PROVIDER === 'pollinations' ? 'flux' : 'z-image'),
+        use_brand_overlay: true,
+        campaign_brief: briefData.campaign_angle || '',
+        video_mode: 'quick',
+        approval_modes: { stage1: 'auto', stage2: 'humano', stage3: 'humano', stage4: 'humano', stage5: 'humano' },
+        notifications: true,
+        skip_dependencies: true,
+      };
+
+      const stageLabels = { 1: 'Brief & Narrativa', 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuicao' };
+      const stageList = stages.map(n => `  <b>${n}.</b> ${stageLabels[n]}`).join('\n');
+
+      await ctx.reply(
+        `<b>Reprocessar campanha: ${campaignFolder}</b>\n\n` +
+        `Etapas:\n${stageList}\n\n` +
+        `Responda <b>sim</b> para iniciar.`,
+        { parse_mode: 'HTML' }
+      );
+
+      session.setPendingRerun(chatId, { payload, stages, campaignFolder });
       return;
     }
   }
@@ -2326,6 +2663,8 @@ function parseArgs(args) {
 bot.catch((err) => {
   console.error('Bot error:', err.message);
 });
+
+// (rerun command moved above bot.on message:text)
 
 // ── /aprovar — re-scan pending approvals ─────────────────────────────────────
 
