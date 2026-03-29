@@ -199,6 +199,14 @@ export const DynamicScene: React.FC<SceneProps> = ({
   const showProduct = hasProduct(scene);
   const productSrc = getProductSrc(scene);
 
+  // Read typography from scene plan (set by adapter from text_layout)
+  const sceneTextOverlay = typeof scene.text_overlay === 'object' ? scene.text_overlay : null;
+  const sceneFontSize = sceneTextOverlay?.tamanho || null;
+  const sceneFontWeight = sceneTextOverlay?.peso ? Number(sceneTextOverlay.peso) || 800 : null;
+  const sceneTextColor = sceneTextOverlay?.cor || null;
+  const sceneTextPosition = sceneTextOverlay?.posicao || null;
+  const sceneLineHeight = sceneTextOverlay?.line_height || null;
+
   // ── Resolve camera, overlay, text animation from scene data + description ──
   const cameraEffect: CameraEffect =
     scene.camera_effect
@@ -237,12 +245,14 @@ export const DynamicScene: React.FC<SceneProps> = ({
           )}
           <TextOverlay
             text={ctaMainText}
-            fontSize={60}
-            color={dark(palette)}
-            animation="bounce-in"
+            fontSize={sceneFontSize || 60}
+            color={sceneTextColor || dark(palette)}
+            animation={textAnim || "bounce-in"}
             startFrame={textStart > 0 ? textStart : 15}
-            positionPercent={55}
-            fontWeight={800}
+            position={sceneTextPosition || undefined}
+            positionPercent={!sceneTextPosition ? 55 : undefined}
+            fontWeight={sceneFontWeight || 800}
+            lineHeight={sceneLineHeight || undefined}
           />
           <CTAButton text={buttonText} bgColor={amber(palette)} textColor={light(palette)} startFrame={Math.floor(scene.duracao_frames * 0.6)} />
         </CameraMotion>
@@ -257,12 +267,14 @@ export const DynamicScene: React.FC<SceneProps> = ({
         )}
         <TextOverlay
           text={ctaMainText}
-          fontSize={60}
-          color={dark(palette)}
-          animation="bounce-in"
+          fontSize={sceneFontSize || 60}
+          color={sceneTextColor || dark(palette)}
+          animation={textAnim || "bounce-in"}
           startFrame={textStart > 0 ? textStart : 15}
-          positionPercent={55}
-          fontWeight={800}
+          position={sceneTextPosition || undefined}
+          positionPercent={!sceneTextPosition ? 55 : undefined}
+          fontWeight={sceneFontWeight || 800}
+          lineHeight={sceneLineHeight || undefined}
         />
         <CTAButton text={buttonText} bgColor={amber(palette)} textColor={light(palette)} startFrame={Math.floor(scene.duracao_frames * 0.6)} />
       </AbsoluteFill>
@@ -310,13 +322,15 @@ export const DynamicScene: React.FC<SceneProps> = ({
         {/* Text */}
         <TextOverlay
           text={text}
-          fontSize={tipo.includes('hook') ? 68 : tipo.includes('cta') ? 60 : 52}
-          color={overlayType === 'light' ? dark(palette) : light(palette)}
+          fontSize={sceneFontSize || (tipo.includes('hook') ? 68 : tipo.includes('cta') ? 60 : 52)}
+          color={sceneTextColor || (overlayType === 'light' ? dark(palette) : light(palette))}
           animation={textAnim}
           startFrame={textStart}
-          positionPercent={tipo.includes('hook') ? 55 : tipo.includes('close') ? 18 : 72}
+          position={sceneTextPosition || undefined}
+          positionPercent={!sceneTextPosition ? (tipo.includes('hook') ? 55 : tipo.includes('close') ? 18 : 72) : undefined}
           italic={tipo.includes('flashback')}
-          fontWeight={tipo.includes('hook') ? 900 : 700}
+          fontWeight={sceneFontWeight || (tipo.includes('hook') ? 900 : 700)}
+          lineHeight={sceneLineHeight || undefined}
         />
       </CameraMotion>
     );
@@ -378,12 +392,14 @@ export const DynamicScene: React.FC<SceneProps> = ({
 
       <TextOverlay
         text={text}
-        fontSize={56}
-        color={tipo.includes('benefit') ? dark(palette) : light(palette)}
+        fontSize={sceneFontSize || 56}
+        color={sceneTextColor || (tipo.includes('benefit') ? dark(palette) : light(palette))}
         animation={textAnim}
         startFrame={textStart}
-        position="center"
-        positionPercent={65}
+        position={sceneTextPosition || 'center'}
+        positionPercent={!sceneTextPosition ? 65 : undefined}
+        fontWeight={sceneFontWeight || 700}
+        lineHeight={sceneLineHeight || undefined}
       />
     </AbsoluteFill>
   );
