@@ -865,11 +865,19 @@ async function handleVideoQuick(job) {
   // Check for narration capability
   const hasElevenLabs = !!process.env.ELEVENLABS_API_KEY;
 
-  // Check for background music
-  const musicDir = path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music');
-  const musicFiles = fs.existsSync(musicDir)
-    ? fs.readdirSync(musicDir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f)).map(f => `${project_dir}/assets/music/${f}`)
-    : [];
+  // Check for background music (music/ → audio/ → assets/ fallback)
+  const _mDirs = [
+    path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music'),
+    path.resolve(PROJECT_ROOT, project_dir, 'assets', 'audio'),
+    path.resolve(PROJECT_ROOT, project_dir, 'assets'),
+  ];
+  let musicFiles = [];
+  for (const _md of _mDirs) {
+    if (fs.existsSync(_md)) {
+      const _mf = fs.readdirSync(_md).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f) && !f.includes('narration'));
+      if (_mf.length > 0) { musicFiles = _mf.map(f => path.relative(PROJECT_ROOT, path.join(_md, f))); break; }
+    }
+  }
 
   const audioInstructions = hasElevenLabs ? `
 NARRATION (optional — ElevenLabs available):
@@ -1024,11 +1032,22 @@ async function handleVideoAdSpecialist(job) {
         `  ${i + 1}. Video ${i + 1} — 20 seconds, unique angle on the campaign theme`
       ).join('\n');
 
-  // Check for background music files in project assets
-  const musicDir = path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music');
-  const musicFiles = fs.existsSync(musicDir)
-    ? fs.readdirSync(musicDir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f)).map(f => `${project_dir}/assets/music/${f}`)
-    : [];
+  // Check for background music files in project assets (music/ or audio/)
+  const musicDirs = [
+    path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music'),
+    path.resolve(PROJECT_ROOT, project_dir, 'assets', 'audio'),
+    path.resolve(PROJECT_ROOT, project_dir, 'assets'),
+  ];
+  let musicFiles = [];
+  for (const mdir of musicDirs) {
+    if (fs.existsSync(mdir)) {
+      const found = fs.readdirSync(mdir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f) && !f.includes('narration'));
+      if (found.length > 0) {
+        musicFiles = found.map(f => path.relative(PROJECT_ROOT, path.join(mdir, f)));
+        break;
+      }
+    }
+  }
   const musicInstructions = musicFiles.length > 0 ? `
 BACKGROUND MUSIC (available files):
 ${musicFiles.map(f => `  - ${f}`).join('\n')}
@@ -1245,6 +1264,9 @@ After saving all scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_di
           scene.image_type = scene.image_type || 'raw';
           planChanged = true;
           process.stdout.write(`[STAGE2_IMAGE_READY] ${output_dir} ${outputPath}\n`);
+          // Save prompt alongside image
+          const promptTxt = outputPath.replace(/\.[^.]+$/, '_prompt.txt');
+          fs.writeFileSync(promptTxt, finalPrompt, 'utf-8');
         } catch (err) {
           log(output_dir, 'video_ad_specialist', `Failed scene image ${s + 1}: ${err.message}`);
         }
@@ -1253,6 +1275,15 @@ After saving all scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_di
       if (planChanged) {
         fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
         log(output_dir, 'video_ad_specialist', `Updated scene plan with generated image paths: video_${idx}_scene_plan.json`);
+
+        // Save prompts alongside images
+        const promptsLog = plan.scenes
+          .filter(sc => sc.image_prompt && sc.image)
+          .map(sc => ({ prompt: sc.image_prompt, image: path.basename(sc.image) }));
+        if (promptsLog.length > 0) {
+          const promptsPath = path.join(absImgsDir, `${task_name}_video_${idx}_prompts.json`);
+          fs.writeFileSync(promptsPath, JSON.stringify(promptsLog, null, 2), 'utf-8');
+        }
       }
     }
   }
@@ -1404,11 +1435,19 @@ async function handleVideoPro(job) {
         `  ${i + 1}. Video ${i + 1} — 60 seconds, professional edit with 30-50 rapid cuts`
       ).join('\n');
 
-  // Check for background music
-  const musicDir = path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music');
-  const musicFiles = fs.existsSync(musicDir)
-    ? fs.readdirSync(musicDir).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f)).map(f => `${project_dir}/assets/music/${f}`)
-    : [];
+  // Check for background music (music/ → audio/ → assets/ fallback)
+  const _mDirs = [
+    path.resolve(PROJECT_ROOT, project_dir, 'assets', 'music'),
+    path.resolve(PROJECT_ROOT, project_dir, 'assets', 'audio'),
+    path.resolve(PROJECT_ROOT, project_dir, 'assets'),
+  ];
+  let musicFiles = [];
+  for (const _md of _mDirs) {
+    if (fs.existsSync(_md)) {
+      const _mf = fs.readdirSync(_md).filter(f => /\.(mp3|wav|aac|m4a)$/i.test(f) && !f.includes('narration'));
+      if (_mf.length > 0) { musicFiles = _mf.map(f => path.relative(PROJECT_ROOT, path.join(_md, f))); break; }
+    }
+  }
   const musicInstructions = musicFiles.length > 0 ? `
 BACKGROUND MUSIC (available files):
 ${musicFiles.map(f => `  - ${f}`).join('\n')}
@@ -1662,6 +1701,9 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
           scene.image = outputPath;
           promptMap.set(scene.image_prompt, outputPath);
           planChanged = true;
+          // Save prompt as .txt alongside the image
+          const promptTxtPath = outputPath.replace(/\.[^.]+$/, '_prompt.txt');
+          fs.writeFileSync(promptTxtPath, finalPrompt, 'utf-8');
         } catch (err) {
           log(output_dir, 'video_pro', `Failed image gen: ${err.message}`);
         }
@@ -1676,6 +1718,15 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
         }
         fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
         log(output_dir, 'video_pro', `Updated plan with ${promptMap.size} unique images for ${plan.scenes.length} cuts`);
+
+        // Save prompts alongside images for reference
+        const promptsLog = [];
+        for (const [prompt, imgPath] of promptMap.entries()) {
+          promptsLog.push({ prompt, image: path.basename(imgPath) });
+        }
+        const promptsPath = path.resolve(absImgsDir, `${task_name}_video_${idx}_prompts.json`);
+        fs.writeFileSync(promptsPath, JSON.stringify(promptsLog, null, 2), 'utf-8');
+        log(output_dir, 'video_pro', `Saved ${promptsLog.length} image prompts to ${promptsPath}`);
       }
     }
   }

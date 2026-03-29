@@ -21,15 +21,41 @@ async function sendPhoto(ctx, filePath, caption) {
 
 /**
  * Send a video to a chat.
+ * Telegram limit: 50MB for bots. If larger, send path instead.
  */
 async function sendVideo(ctx, filePath, caption) {
   if (!fs.existsSync(filePath)) {
     await ctx.reply(`Arquivo nao encontrado: ${path.basename(filePath)}`);
     return;
   }
-  await ctx.replyWithVideo(new InputFile(filePath), {
-    caption: caption || path.basename(filePath),
-  });
+  const stats = fs.statSync(filePath);
+  const sizeMB = stats.size / (1024 * 1024);
+  if (sizeMB > 49) {
+    await ctx.reply(
+      `🎬 <b>${caption || path.basename(filePath)}</b>\n` +
+      `Tamanho: ${sizeMB.toFixed(1)} MB (acima do limite Telegram)\n` +
+      `Caminho: <code>${filePath}</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  try {
+    await ctx.replyWithVideo(new InputFile(filePath), {
+      caption: caption || path.basename(filePath),
+    });
+  } catch (err) {
+    // Fallback: send as document or just path
+    if (err.message?.includes('too large') || err.message?.includes('413')) {
+      await ctx.reply(
+        `🎬 <b>${caption || path.basename(filePath)}</b>\n` +
+        `Nao foi possivel enviar (${sizeMB.toFixed(1)} MB)\n` +
+        `Caminho: <code>${filePath}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      throw err;
+    }
+  }
 }
 
 /**

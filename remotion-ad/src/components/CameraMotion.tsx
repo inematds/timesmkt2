@@ -161,19 +161,26 @@ export const CameraMotion: React.FC<CameraMotionProps> = ({
 
   return (
     <AbsoluteFill style={{ overflow: 'hidden' }}>
-      {/* Background image with camera motion */}
+      {/* Background image with camera motion — NEVER stretch, always crop */}
       <div style={{
         position: 'absolute',
         inset: '-10%', // overshoot to avoid edges during movement
         transform: `scale(${scale}) translate(${translateX}px, ${translateY}px) rotate(${rotate}deg)`,
         filter: filterStr,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
       }}>
         <Img
           src={src.startsWith('/') || src.startsWith('http') ? src : staticFile(src)}
           style={{
-            width: '100%',
-            height: '100%',
+            minWidth: '100%',
+            minHeight: '100%',
+            width: 'auto',
+            height: 'auto',
             objectFit: 'cover',
+            objectPosition: 'center center',
           }}
         />
       </div>

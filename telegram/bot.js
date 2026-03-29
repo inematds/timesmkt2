@@ -58,70 +58,67 @@ bot.command('start', async (ctx) => {
   const s = session.get(chatId);
 
   await ctx.reply(
-    `Ola! Sou o bot do <b>ITAGMKT</b>.\n\n` +
+    `Ola! Sou o bot do <b>ITAGMKT v4.2.8</b>.\n\n` +
     `Projeto ativo: <code>${s.projectDir}</code>\n\n` +
-    `Comandos:\n` +
-    `/projetos — listar projetos\n` +
-    `/projeto &lt;nome&gt; — selecionar projeto\n` +
-    `/campanha &lt;nome&gt; — rodar pipeline completo\n` +
-    `/status — ver status do pipeline\n` +
-    `/outputs — listar campanhas geradas\n` +
-    `/enviar &lt;pasta&gt; — receber arquivos da campanha\n` +
+    `<b>Comandos principais:</b>\n` +
+    `/campanha &lt;nome&gt; — rodar pipeline 5 etapas\n` +
     `/rerun &lt;campanha&gt; &lt;etapas&gt; — reprocessar etapas\n` +
-    `/modos [etapa] [humano|agente|auto] — modos de aprovacao\n` +
-    `/fix &lt;descricao&gt; — corrigir algo no sistema\n` +
-    `/novochat — limpar historico\n` +
-    `/help — este menu\n\n` +
-    `Ou simplesmente escreva uma mensagem e eu respondo como o Claude.`,
+    `/status — ver status do pipeline\n` +
+    `/enviar &lt;campanha&gt; [tipo] — receber arquivos\n` +
+    `/cancel — cancelar pipeline ativo\n` +
+    `/projetos — listar/mudar projeto\n` +
+    `/help — menu completo`,
     { parse_mode: 'HTML' }
   );
 });
 
 bot.command('help', async (ctx) => {
   await ctx.reply(
-    `<b>TIMES MKT — Menu Principal</b>\n\n` +
+    `<b>ITAGMKT v4.2.8 — Menu Completo</b>\n\n` +
+
+    `<b>Pipeline (5 etapas)</b>\n` +
+    `/campanha &lt;nome&gt; [opcoes] — pipeline completo\n` +
+    `/rerun &lt;campanha&gt; &lt;etapas&gt; — reprocessar\n` +
+    `/cancel — cancelar pipeline ativo\n` +
+    `/status — status por etapa\n` +
+    `/outputs — listar campanhas\n` +
+    `/relatorio &lt;campanha&gt; — resumo de arquivos\n` +
+    `/enviar &lt;campanha&gt; [imagens|videos|audio|copy|tudo]\n` +
+    `/aprovar — re-verificar aprovacoes pendentes\n` +
+    `/modos [etapa] [humano|agente|auto]\n\n` +
+
+    `<b>Etapas do pipeline:</b>\n` +
+    `  1. Estrategia — Research + Diretor Criativo + Copywriter\n` +
+    `  2. Imagens — Ad Creative Designer\n` +
+    `  3. Video — Quick (sempre) + Pro (sob demanda)\n` +
+    `  4. Plataformas — Instagram, YouTube, TikTok, Facebook, Threads, LinkedIn\n` +
+    `  5. Distribuicao — Upload + Agendar + Publicar\n\n` +
 
     `<b>Projetos</b>\n` +
     `/projetos — lista projetos\n` +
     `/projeto &lt;nome&gt; — muda projeto ativo\n\n` +
 
-    `<b>Pipeline</b>\n` +
-    `/campanha &lt;nome&gt; [opcoes] — pipeline completo\n` +
-    `/status — status do pipeline\n` +
-    `/outputs — lista campanhas\n` +
-    `/relatorio &lt;campanha&gt; — resumo + inventario de arquivos\n` +
-    `/enviar &lt;campanha&gt; [imagens|videos|audio|copy|tudo]\n` +
-    `/aprovar — re-verificar aprovações pendentes\n` +
-    `/modos [etapa] [humano|agente|auto] — modos de aprovação\n\n` +
-
-    `<b>Agentes</b>\n` +
+    `<b>Agentes avulsos</b>\n` +
     `/pesquisa &lt;tema&gt; — Research Agent\n` +
     `/copy &lt;campanha&gt; — Copywriter Agent\n\n` +
 
     `<b>Midia</b>\n` +
-    `/img-api, /img-free, /img-svg, /img-pasta\n` +
-    `/video-api, /video-fmt, /video-clip-pasta\n` +
-    `/musica-free, /musica-api\n` +
-    `/sfx-free\n` +
-    `/tts-api, /tts-free\n` +
-    `/media-status\n\n` +
+    `/img-api, /img-free, /img-pasta\n` +
+    `/tts-api — narracao ElevenLabs\n` +
+    `/media-status — APIs configuradas\n\n` +
 
     `<b>Fotos (upload)</b>\n` +
-    `/fotoprojeto [pasta] — proximas fotos vao para o projeto\n` +
-    `/fotocampanha [pasta] — proximas fotos vao para a campanha ativa\n` +
-    `Envie foto com legenda "campanha" ou "projeto" para override\n\n` +
+    `/fotoprojeto — fotos vao para assets/\n` +
+    `/fotocampanha — fotos vao para campanha ativa\n\n` +
+
+    `<b>Rerun — exemplos:</b>\n` +
+    `<code>/rerun c15 video pro</code>\n` +
+    `<code>/rerun c14 imagens</code>\n` +
+    `<code>/rerun c13 2,3</code>\n\n` +
 
     `<b>Conversa</b>\n` +
     `/novochat — limpa historico\n` +
-    `Texto livre = conversa com Claude\n\n` +
-
-    `<b>Detalhes por tema:</b>\n` +
-    `/helpcampanha — pipeline e etapas v3\n` +
-    `/helpaprovacoes — modos de aprovação e Agente Revisor\n` +
-    `/helpimagens — geracao e busca de imagens\n` +
-    `/helpvideos — criacao de videos\n` +
-    `/helpaudio — musica, SFX e narracao\n` +
-    `/helpcustos — tabela de custos por comando`,
+    `Texto livre = conversa com Claude`,
     { parse_mode: 'HTML' }
   );
 });
@@ -130,15 +127,16 @@ bot.command('help', async (ctx) => {
 
 bot.command('helpcampanha', async (ctx) => {
   await ctx.reply(
-    `<b>PIPELINE COMPLETO — ITAGMKT v4</b>\n\n` +
+    `<b>PIPELINE COMPLETO — ITAGMKT v4.2.8</b>\n\n` +
 
-    `O pipeline roda em <b>4 etapas com aprovação</b>:\n` +
-    `  <b>1.</b> Pesquisa + Brief Criativo\n` +
-    `  <b>2.</b> Imagens + Copy (paralelo)\n` +
-    `  <b>3.</b> Vídeo\n` +
-    `  <b>4.</b> Distribuição\n\n` +
+    `O pipeline roda em <b>5 etapas com aprovação</b>:\n` +
+    `  <b>1.</b> Estrategia — Research + Diretor Criativo + Copywriter\n` +
+    `  <b>2.</b> Imagens — Ad Creative Designer\n` +
+    `  <b>3.</b> Video — Quick (sempre) + Pro (sob demanda)\n` +
+    `  <b>4.</b> Plataformas — Instagram, YouTube, TikTok, Facebook, Threads, LinkedIn\n` +
+    `  <b>5.</b> Distribuicao — Upload Supabase + Agendar + Publicar\n\n` +
 
-    `A cada etapa o bot envia o resultado e aguarda sua confirmação antes de avançar (modo padrão). Veja /helpaprovacoes para mudar isso.\n\n` +
+    `A cada etapa o bot envia o resultado e aguarda confirmação (modo padrão). Veja /helpaprovacoes.\n\n` +
 
     `<b>Como iniciar:</b>\n` +
     `Descreva sua campanha em linguagem natural:\n` +
@@ -176,7 +174,7 @@ bot.command('helpaprovacoes', async (ctx) => {
   await ctx.reply(
     `<b>APROVAÇÕES — Como funciona</b>\n\n` +
 
-    `O pipeline v3 tem <b>4 pontos de aprovação</b>, um por etapa:\n\n` +
+    `O pipeline v4 tem <b>5 pontos de aprovação</b>, um por etapa:\n\n` +
     `  <b>Etapa 1</b> — Brief Criativo\n` +
     `  O Diretor de Criação entrega o ângulo estratégico da campanha.\n` +
     `  Você aprova antes das imagens e copy serem gerados.\n\n` +
@@ -467,6 +465,37 @@ bot.command('relatorio', async (ctx) => {
 
 // ── /enviar <campanha> [tipo] ────────────────────────────────────────────────
 // Download specific file types from a campaign
+// ── /cancel ──────────────────────────────────────────────────────────────────
+
+bot.command('cancel', async (ctx) => {
+  const chatId = String(ctx.chat.id);
+  const s = session.get(chatId);
+
+  if (!s.runningTask) {
+    return ctx.reply('Nenhum pipeline ativo para cancelar.');
+  }
+
+  const taskName = s.runningTask.taskName;
+
+  // Kill worker processes
+  try {
+    const { execSync } = require('child_process');
+    const pids = execSync("ps aux | grep 'worker.js' | grep -v grep | awk '{print $2}'").toString().trim();
+    if (pids) {
+      for (const pid of pids.split('\n')) {
+        try { process.kill(Number(pid), 'SIGTERM'); } catch {}
+      }
+    }
+  } catch {}
+
+  // Clear session state
+  session.clearRunningTask(chatId);
+  session.clearPendingRerun(chatId);
+
+  await ctx.reply(`Pipeline <b>${taskName}</b> cancelado.`, { parse_mode: 'HTML' });
+});
+
+// ── /enviar <campanha> [tipo] ────────────────────────────────────────────────
 // tipo: imagens | videos | audio | copy | tudo
 
 bot.command('enviar', async (ctx) => {
@@ -489,22 +518,25 @@ bot.command('enviar', async (ctx) => {
 
   const chatId = String(ctx.chat.id);
   const s = session.get(chatId);
-  let outputDir = path.join(PROJECT_ROOT, s.projectDir, 'outputs', folder);
 
-  if (!fs.existsSync(outputDir)) {
-    // Try to find the campaign in any project
-    const prjRoot = path.join(PROJECT_ROOT, 'prj');
-    const projects = fs.existsSync(prjRoot) ? fs.readdirSync(prjRoot) : [];
-    let found = null;
-    for (const prj of projects) {
-      const candidate = path.join(prjRoot, prj, 'outputs', folder);
-      if (fs.existsSync(candidate)) { found = candidate; session.setProject(chatId, `prj/${prj}`); break; }
+  // Find campaign with partial match (c15 → c0015-pascoa2026)
+  let outputDir = null;
+  let resolvedFolder = findCampaign(s.projectDir, folder);
+  if (resolvedFolder) {
+    outputDir = path.join(PROJECT_ROOT, s.projectDir, 'outputs', resolvedFolder);
+  } else {
+    const result = findCampaignAcrossProjects(folder);
+    if (result) {
+      resolvedFolder = result.campaignFolder;
+      outputDir = path.join(PROJECT_ROOT, result.projectDir, 'outputs', resolvedFolder);
+      session.setProject(chatId, result.projectDir);
     }
-    if (!found) return ctx.reply(`Campanha nao encontrada: ${folder}\n\nUse /outputs para listar campanhas disponíveis.`);
-    outputDir = found;
+  }
+  if (!outputDir || !fs.existsSync(outputDir)) {
+    return ctx.reply(`Campanha nao encontrada: ${folder}\n\nUse /outputs para listar campanhas disponíveis.`);
   }
 
-  await ctx.reply(`Enviando <b>${tipo}</b> de <code>${folder}</code>...`, { parse_mode: 'HTML' });
+  await ctx.reply(`Enviando <b>${tipo}</b> de <code>${resolvedFolder}</code>...`, { parse_mode: 'HTML' });
   await sendCampaignFiles(ctx, outputDir, tipo);
 });
 
