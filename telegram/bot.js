@@ -114,8 +114,8 @@ bot.command('help', async (ctx) => {
 
     `<b>Etapas do pipeline:</b>\n` +
     `  1. Estrategia — Research + Diretor Criativo + Copywriter\n` +
-    `  2. Imagens — Ad Creative Designer\n` +
-    `  3. Video — Quick (sempre) + Pro (sob demanda)\n` +
+    `  2. Imagens — Ad Creative Designer (validação aspect ratio)\n` +
+    `  3. Video — Quick (ffmpeg) + Pro (Diretor de Foto + Opus + Remotion)\n` +
     `  4. Plataformas — Instagram, YouTube, TikTok, Facebook, Threads, LinkedIn\n` +
     `  5. Distribuicao — Upload + Agendar + Publicar\n\n` +
 
@@ -154,14 +154,24 @@ bot.command('help', async (ctx) => {
 
 bot.command('helpcampanha', async (ctx) => {
   await ctx.reply(
-    `<b>PIPELINE COMPLETO — ITAGMKT v4.2.8</b>\n\n` +
+    `<b>PIPELINE COMPLETO — ITAGMKT v4.3.0</b>\n\n` +
 
-    `O pipeline roda em <b>5 etapas com aprovação</b>:\n` +
+    `O pipeline roda em <b>5 etapas</b>:\n` +
     `  <b>1.</b> Estrategia — Research + Diretor Criativo + Copywriter\n` +
-    `  <b>2.</b> Imagens — Ad Creative Designer\n` +
-    `  <b>3.</b> Video — Quick (sempre) + Pro (sob demanda)\n` +
+    `  <b>2.</b> Imagens — Ad Creative Designer (validação 1:1/9:16)\n` +
+    `  <b>3.</b> Video\n` +
+    `      ▶️ Quick — slideshow 15s (ffmpeg)\n` +
+    `      ▶️ Pro — Diretor de Fotografia + Scene Plan + Remotion 60s\n` +
     `  <b>4.</b> Plataformas — Instagram, YouTube, TikTok, Facebook, Threads, LinkedIn\n` +
-    `  <b>5.</b> Distribuicao — Upload Supabase + Agendar + Publicar\n\n` +
+    `  <b>5.</b> Distribuicao — Upload + Agendar + Publicar\n\n` +
+
+    `<b>Fases do Video Pro:</b>\n` +
+    `  1. Narração (ElevenLabs)\n` +
+    `  1.5 Timing áudio (ffprobe)\n` +
+    `  1.6 Diretor de Fotografia (Opus)\n` +
+    `  2. Scene Plan (Opus)\n` +
+    `  3. Imagens (se API)\n` +
+    `  4. Render (Remotion)\n\n` +
 
     `A cada etapa o bot envia o resultado e aguarda confirmação (modo padrão). Veja /helpaprovacoes.\n\n` +
 
@@ -816,19 +826,24 @@ bot.command('status', async (ctx) => {
           if (!fs.existsSync(vLog)) continue;
           const vContent = fs.readFileSync(vLog, 'utf-8');
           const phases = [
-            { key: 'Generating narration', label: 'Narracao', icon: '⏳' },
+            { key: 'Generating narration', label: 'Narracao', icon: '▶️' },
             { key: 'Narration already exists', label: 'Narracao', icon: '✅' },
             { key: 'Narration generated', label: 'Narracao', icon: '✅' },
-            { key: 'Creating scene plan', label: 'Scene plan', icon: '⏳' },
+            { key: 'Analyzing narration audio', label: 'Timing audio', icon: '▶️' },
+            { key: 'Audio timing:', label: 'Timing audio', icon: '✅' },
+            { key: 'Photography Director', label: 'Dir. Fotografia', icon: '▶️' },
+            { key: 'Photography plan created', label: 'Dir. Fotografia', icon: '✅' },
+            { key: 'Photography plan already exists', label: 'Dir. Fotografia', icon: '✅' },
+            { key: 'Creating scene plan', label: 'Scene plan', icon: '▶️' },
             { key: 'Scene plan saved', label: 'Scene plan', icon: '✅' },
-            { key: 'Capturing screenshots', label: 'Screenshots', icon: '⏳' },
+            { key: 'Capturing screenshots', label: 'Screenshots', icon: '▶️' },
             { key: 'Screenshots captured', label: 'Screenshots', icon: '✅' },
-            { key: 'Rendering draft', label: 'Draft render', icon: '⏳' },
+            { key: 'Rendering draft', label: 'Draft render', icon: '▶️' },
             { key: 'Draft 01 rendered', label: 'Draft render', icon: '✅' },
-            { key: 'Generating image', label: 'Gerando imagens', icon: '⏳' },
-            { key: '[VIDEO_APPROVAL_NEEDED] Waiting', label: 'Aguardando aprovacao', icon: '⏳' },
-            { key: 'Rendering video', label: 'Render final', icon: '⏳' },
-            { key: 'render_start', label: 'Render final', icon: '⏳' },
+            { key: 'Generating image', label: 'Gerando imagens', icon: '▶️' },
+            { key: '[VIDEO_APPROVAL_NEEDED] Waiting', label: 'Aguardando aprovacao', icon: '🔄' },
+            { key: 'Starting video render', label: 'Render final', icon: '▶️' },
+            { key: 'render_start', label: 'Render final', icon: '▶️' },
             { key: 'Video 1 rendered', label: 'Render final', icon: '✅' },
             { key: 'Completed successfully', label: 'Completo', icon: '✅' },
           ];
