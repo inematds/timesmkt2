@@ -3302,7 +3302,7 @@ function readChatContext(campDir) {
 }
 
 // ── Resume in-progress campaigns after restart ──────────────────────────────
-async function resumeInProgressCampaigns() {
+async function resumeInProgressCampaigns(monitoredSignals) {
   const prjRoot = path.resolve(PROJECT_ROOT, 'prj');
   if (!fs.existsSync(prjRoot)) return;
 
@@ -3366,33 +3366,21 @@ async function resumeInProgressCampaigns() {
 
       console.log(`[resume] Campaign ${campaign} — stage ${highestDone} done, resuming from stage ${highestDone + 1}`);
 
-      // Restore session state
+      // Pre-populate monitoredSignals with completed stages so monitor doesn't re-enqueue
       const outputDir = `prj/${prj}/outputs/${campaign}`;
-      const videoMode = payload.video_pro ? 'both' : 'quick';
-      session.setRunningTask(chatId, {
-        taskName: campaign,
-        taskDate: payload.task_date,
-        outputDir,
-        startedAt: new Date().toISOString(),
-        videoMode,
-      });
-      session.setCampaignV3(chatId, {
-        payload,
-        outputDir,
-        currentStage: highestDone + 1,
-        approvalModes: payload.approval_modes || {},
-        notifications: payload.notifications !== false,
-      });
+      if (monitoredSignals) {
+        for (let doneStage = 1; doneStage <= highestDone; doneStage++) {
+          monitoredSignals.add(`stage_done:${outputDir}:${doneStage}`);
+        }
+      }
 
-      // Notify user
+      // Notify user only — do NOT auto-resume to avoid enqueue loops
       bot.api.sendMessage(chatId,
-        `🔄 Campanha <b>${campaign}</b> estava em andamento (etapa ${highestDone}/5 completa).\n` +
-        `Continuando a partir da etapa ${highestDone + 1}...\n` +
-        `Use <code>/cancel</code> para cancelar.`,
+        `ℹ️ Campanha <b>${campaign}</b> encontrada (etapa ${highestDone}/5 completa).\n` +
+        `Use <code>/continue ${campaign}</code> para retomar.\n` +
+        `Ou inicie uma nova campanha normalmente.`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
-
-      // The signal monitor will detect stage completions and auto-advance
     }
   }
 }
@@ -3413,13 +3401,15 @@ bot.start({
     // Scan for pending approvals left over from before restart
     await scanPendingApprovals(null, null);
 
-    // Resume in-progress campaigns
-    await resumeInProgressCampaigns();
+    // Signal tracker — shared between resume and monitor
+    const monitoredSignals = new Set();
+
+    // Resume in-progress campaigns and pre-populate monitoredSignals
+    await resumeInProgressCampaigns(monitoredSignals);
 
     // ── Continuous signal monitor ───────────────────────────────────────────
     // Polls for worker signal files every 10s so the bot detects events
     // even when the worker runs as a separate process (not as child process).
-    const monitoredSignals = new Set(); // track already-handled signals
     setInterval(async () => {
       // Find all active campaigns with chat context
       const prjRoot = path.resolve(PROJECT_ROOT, 'prj');
