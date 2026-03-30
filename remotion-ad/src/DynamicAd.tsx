@@ -152,20 +152,16 @@ export const DynamicAd: React.FC<ScenePlanProps> = (props) => {
         const duration = scene.duracao_frames || 90;
         const isLast = index === scenes.length - 1;
 
-        // Transition: overlap with previous scene
+        // Transition: visual overlap only — content starts at exact frame_inicio
+        // to keep text synchronized with narration audio
         const transition = scene.transition || (index > 0 ? 'crossfade' : 'none');
         const transitionDuration = scene.transition_duration || (transition !== 'none' ? 10 : 0);
-        // Start earlier to overlap with previous scene's end
-        const overlapStart = index > 0 && transition !== 'none'
-          ? Math.max(0, startFrame - transitionDuration)
-          : startFrame;
-        const overlapDuration = duration + (overlapStart < startFrame ? startFrame - overlapStart : 0);
 
         return (
           <Sequence
             key={scene.scene_id || index}
-            from={overlapStart}
-            durationInFrames={overlapDuration}
+            from={startFrame}
+            durationInFrames={duration}
             name={scene.nome || scene.tipo || `Scene ${index + 1}`}
           >
             <SceneWithTransition
