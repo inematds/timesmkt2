@@ -872,7 +872,6 @@ Design quality bar:
   await runClaude(prompt, 'ad_creative_designer', output_dir, 900000); // 15 min for multiple images
 
   // ── Post-render: validate aspect ratios ──────────────────────────────────
-  const absAdsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
   if (fs.existsSync(absAdsDir)) {
     const pngFiles = fs.readdirSync(absAdsDir).filter(f => f.endsWith('.png'));
     for (const f of pngFiles) {
