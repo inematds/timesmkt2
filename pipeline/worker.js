@@ -870,6 +870,39 @@ Design quality bar:
 - Campaign theme + emotional feeling present in every single image`;
 
   await runClaude(prompt, 'ad_creative_designer', output_dir, 900000); // 15 min for multiple images
+
+  // ── Post-render: validate aspect ratios ──────────────────────────────────
+  const absAdsDir = path.resolve(PROJECT_ROOT, output_dir, 'ads');
+  if (fs.existsSync(absAdsDir)) {
+    const pngFiles = fs.readdirSync(absAdsDir).filter(f => f.endsWith('.png'));
+    for (const f of pngFiles) {
+      const dims = getImageDimensions(path.join(absAdsDir, f));
+      if (!dims) continue;
+      const ratio = parseFloat(dims.ratio);
+      const isCarousel = f.includes('carousel');
+      const isStory = f.includes('story') || f.includes('reel');
+
+      if (isCarousel && (ratio < 0.85 || ratio > 1.15)) {
+        log(output_dir, 'ad_creative_designer', `WARN: ${f} is ${dims.width}x${dims.height} (ratio ${dims.ratio}) — expected 1:1 for carousel. Cropping...`);
+        const fullPath = path.join(absAdsDir, f);
+        const tmpPath = fullPath + '.tmp.png';
+        try {
+          execFileSync('ffmpeg', ['-y', '-i', fullPath, '-vf', 'crop=min(iw\\,ih):min(iw\\,ih)', tmpPath],
+            { stdio: 'pipe', timeout: 15000 });
+          fs.renameSync(tmpPath, fullPath);
+          log(output_dir, 'ad_creative_designer', `Cropped ${f} to 1:1`);
+        } catch (e) {
+          log(output_dir, 'ad_creative_designer', `Failed to crop ${f}: ${e.message.slice(0, 100)}`);
+          try { fs.unlinkSync(tmpPath); } catch {}
+        }
+      }
+
+      if (isStory && (ratio > 0.65 || ratio < 0.45)) {
+        log(output_dir, 'ad_creative_designer', `WARN: ${f} is ${dims.width}x${dims.height} (ratio ${dims.ratio}) — expected 9:16 for story`);
+      }
+    }
+  }
+
   return { status: 'complete', output: `${output_dir}/ads/` };
 }
 
@@ -886,9 +919,10 @@ async function handleVideoQuick(job) {
 
   // Skip if already completed (rerun optimization)
   if (job.data.skip_completed) {
-    const finalVideo = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_video_01.mp4`);
-    if (fs.existsSync(finalVideo)) {
-      log(output_dir, 'video_quick', `Skipping — video already exists: ${finalVideo}`);
+    const finalVideo = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_quick_01.mp4`);
+    const legacyVideo = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_video_01.mp4`);
+    if (fs.existsSync(finalVideo) || fs.existsSync(legacyVideo)) {
+      log(output_dir, 'video_quick', `Skipping — video already exists`);
       return { status: 'skipped', reason: 'already completed' };
     }
   }
@@ -1041,7 +1075,7 @@ After saving scene plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
       continue;
     }
 
-    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_video_${idx}.mp4`);
+    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_quick_${idx}.mp4`);
     log(output_dir, 'video_quick', `Rendering video ${i}/${video_count}...`);
 
     try {
@@ -1493,9 +1527,9 @@ async function handleVideoPro(job) {
 
   // Skip if already completed (rerun optimization)
   if (job.data.skip_completed) {
-    const finalVideo = path.resolve(PROJECT_ROOT, output_dir, 'video', vf('01', '.mp4'));
-    if (fs.existsSync(finalVideo)) {
-      log(output_dir, 'video_pro', `Skipping — final video already exists: ${finalVideo}`);
+    const proVideo = path.resolve(PROJECT_ROOT, output_dir, 'video', `${task_name}_pro_01.mp4`);
+    if (fs.existsSync(proVideo)) {
+      log(output_dir, 'video_pro', `Skipping — final video already exists: ${proVideo}`);
       return { status: 'skipped', reason: 'already completed' };
     }
   }
@@ -1675,19 +1709,98 @@ After generating all narrations, print: [NARRATION_DONE]`;
     log(output_dir, 'video_pro', 'Narration already exists, skipping.');
   }
 
-  // ── PHASE 2: Scene Plan (Opus — complex planning) ──────────────────────────
-  log(output_dir, 'video_pro', 'Phase 2: Creating scene plan (Opus)...');
+  // ── PHASE 1.5: Analyze narration audio timing ─────────────────────────────
+  log(output_dir, 'video_pro', 'Phase 1.5: Analyzing narration audio timing...');
 
-  // Build list of existing narration files for the scene plan prompt
   const narrationFiles = [];
+  const narrationTimings = [];
   for (let i = 1; i <= video_count; i++) {
     const idx = String(i).padStart(2, '0');
     const narPath = `${output_dir}/audio/${task_name}_video_${idx}_narration.mp3`;
-    if (fs.existsSync(path.resolve(PROJECT_ROOT, narPath))) narrationFiles.push(narPath);
+    const absNarPath = path.resolve(PROJECT_ROOT, narPath);
+    if (!fs.existsSync(absNarPath)) continue;
+    narrationFiles.push(narPath);
+
+    // Get exact audio duration via ffprobe
+    let audioDuration = 0;
+    try {
+      const probe = execFileSync('ffprobe', [
+        '-v', 'quiet', '-show_entries', 'format=duration',
+        '-of', 'csv=p=0', absNarPath
+      ], { encoding: 'utf-8', timeout: 10000 }).trim();
+      audioDuration = parseFloat(probe) || 0;
+      log(output_dir, 'video_pro', `Audio ${idx} duration: ${audioDuration.toFixed(1)}s`);
+    } catch (e) {
+      log(output_dir, 'video_pro', `ffprobe failed for ${narPath}: ${e.message.slice(0, 100)}`);
+    }
+
+    // Read the narration script from the log (Phase 1 output)
+    let narrationScript = '';
+    try {
+      const proLog = fs.readFileSync(path.resolve(PROJECT_ROOT, output_dir, 'logs', 'video_pro.log'), 'utf-8');
+      const scriptMatch = proLog.match(/Script utilizado.*?\n\n?>\s*\*?"?([\s\S]*?)\*?"?\n\n/);
+      if (scriptMatch) narrationScript = scriptMatch[1].replace(/\*/g, '').trim();
+    } catch {}
+
+    // Split script into sentences and calculate proportional timing
+    if (audioDuration > 0 && narrationScript) {
+      const sentences = narrationScript.split(/(?<=[.?!])\s+/).filter(s => s.trim());
+      const totalWords = sentences.reduce((sum, s) => sum + s.split(/\s+/).length, 0);
+      let currentTime = 0;
+      const segments = sentences.map(sentence => {
+        const wordCount = sentence.split(/\s+/).length;
+        const duration = (wordCount / totalWords) * audioDuration;
+        const segment = {
+          text: sentence.trim(),
+          start: parseFloat(currentTime.toFixed(2)),
+          end: parseFloat((currentTime + duration).toFixed(2)),
+          duration: parseFloat(duration.toFixed(2)),
+          words: wordCount,
+        };
+        currentTime += duration;
+        return segment;
+      });
+
+      narrationTimings.push({ video: idx, audioDuration, totalWords, segments });
+
+      // Save timing file for reference
+      const timingPath = path.resolve(PROJECT_ROOT, output_dir, 'audio', `${task_name}_video_${idx}_timing.json`);
+      fs.writeFileSync(timingPath, JSON.stringify({ audioDuration, totalWords, segments }, null, 2));
+      log(output_dir, 'video_pro', `Audio timing: ${segments.length} segments, ${totalWords} words in ${audioDuration.toFixed(1)}s`);
+    }
   }
-  const narrationNote = narrationFiles.length > 0
-    ? `Narration audio already generated:\n${narrationFiles.map(f => `  - ${f}`).join('\n')}\nDo NOT regenerate narration. Use it as timing reference.`
-    : 'No narration audio available.';
+
+  // Build timing info for the scene plan prompt
+  let narrationNote = '';
+  if (narrationFiles.length > 0 && narrationTimings.length > 0) {
+    const t = narrationTimings[0];
+    const timingTable = t.segments.map(s =>
+      `  ${s.start.toFixed(1)}s-${s.end.toFixed(1)}s (${s.duration.toFixed(1)}s): "${s.text.slice(0, 80)}${s.text.length > 80 ? '...' : ''}"`
+    ).join('\n');
+    narrationNote = `Narration audio already generated:
+${narrationFiles.map(f => `  - ${f}`).join('\n')}
+
+CRITICAL — EXACT AUDIO TIMING (from ffprobe analysis):
+Total audio duration: ${t.audioDuration.toFixed(1)}s
+Total video_length MUST equal ${Math.ceil(t.audioDuration)}s (match the audio, NOT 60s)
+
+Sentence-by-sentence timing (your scene cuts MUST align with these):
+${timingTable}
+
+RULES:
+- The sum of all scene durations MUST equal ${Math.ceil(t.audioDuration)}s (the audio length)
+- Each scene's "narration" field must correspond to the sentence playing at that time
+- Scene transitions must happen at sentence boundaries (±0.3s tolerance)
+- text_overlay must reinforce the sentence being spoken at that moment
+- Do NOT pad or stretch beyond the audio duration`;
+  } else if (narrationFiles.length > 0) {
+    narrationNote = `Narration audio already generated:\n${narrationFiles.map(f => `  - ${f}`).join('\n')}\nDo NOT regenerate narration. Use it as timing reference.`;
+  } else {
+    narrationNote = 'No narration audio available.';
+  }
+
+  // ── PHASE 2: Scene Plan (Opus — complex planning) ──────────────────────────
+  log(output_dir, 'video_pro', 'Phase 2: Creating scene plan (Opus)...');
 
   const scenePlanPrompt = `You are the Video Editor Agent (Diretor de Edição). Follow the skill defined in skills/video-editor-agent/SKILL.md exactly.
 
@@ -1734,6 +1847,14 @@ CRITICAL RULES (enforced — plan will be rejected if violated):
 - Max 6 words per text_overlay
 - Text overlay COMPLEMENTS narration, never repeats it
 - Sum of all durations must equal video_length (tolerance ±2s)
+
+AUDIO-VISUAL SYNC (CRITICAL):
+- Each scene's "narration" field must contain the EXACT transcript segment spoken during that scene
+- Scene timing MUST match narration pacing — if narrator says 3 words in 1.5s, that scene is 1.5s
+- text_overlay must REINFORCE what narrator is saying (visual keyword, not the full sentence)
+- If narration file exists, estimate word timing (~2.5 words/second for pt-BR) and distribute scenes accordingly
+- Hook scene text appears BEFORE narrator speaks (visual lead)
+- CTA scene text stays visible AFTER narrator finishes (reading time)
 
 TYPOGRAPHY — MAGAZINE COVER STYLE:
 - text_layout.position: ONLY "top" or "center". NEVER "bottom"
@@ -1966,7 +2087,8 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
   for (let i = 1; i <= video_count; i++) {
     const idx = String(i).padStart(2, '0');
-    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', vf(idx, '.mp4'));
+    const proFilename = `${task_name}_pro_${idx}.mp4`;
+    const videoOutput = path.resolve(PROJECT_ROOT, output_dir, 'video', proFilename);
     const absScenePlan = vfFind(idx, '_scene_plan_motion.json');
     const planToRender = path.relative(PROJECT_ROOT, absScenePlan);
 
@@ -1982,7 +2104,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
       execFileSync('node', [
         renderer,
         planToRender,
-        `${output_dir}/video/${vf(idx, '.mp4')}`,
+        `${output_dir}/video/${proFilename}`,
       ], {
         cwd: PROJECT_ROOT,
         stdio: 'pipe',
@@ -1994,7 +2116,7 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
       if (renderer === RENDER_REMOTION) {
         log(output_dir, 'video_pro', `Remotion render ${i} failed, falling back to ffmpeg: ${renderErr.message.slice(0, 150)}`);
         try {
-          execFileSync('node', [RENDER_FFMPEG, planToRender, `${output_dir}/video/${vf(idx, '.mp4')}`], {
+          execFileSync('node', [RENDER_FFMPEG, planToRender, `${output_dir}/video/${proFilename}`], {
             cwd: PROJECT_ROOT, stdio: 'pipe', timeout: 300000,
           });
           log(output_dir, 'video_pro', `Video ${i} rendered via ffmpeg (fallback): ${videoOutput}`);

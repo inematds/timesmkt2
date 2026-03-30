@@ -12,7 +12,30 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const { Bot, InputFile } = require('grammy');
 const fs = require('fs');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFileSync, execSync } = require('child_process');
+
+// Helper: check if a worker is already running before spawning a new one
+function isWorkerRunning() {
+  try {
+    const out = execSync("pgrep -af 'node.*pipeline/worker.js' | grep -v bash | grep -v pgrep", { encoding: 'utf-8', timeout: 3000 });
+    return out.trim().length > 0;
+  } catch { return false; }
+}
+
+function ensureWorker() {
+  if (isWorkerRunning()) {
+    console.log('[bot] Worker already running, skipping spawn.');
+    return null;
+  }
+  console.log('[bot] Spawning new worker...');
+  const w = spawn('node', ['pipeline/worker.js'], {
+    cwd: PROJECT_ROOT,
+    env: { ...process.env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  w.on('error', e => console.error('[worker spawn error]', e.message));
+  return w;
+}
 
 const https = require('https');
 const config = require('./config');
@@ -725,7 +748,7 @@ bot.command('status', async (ctx) => {
     const tail = logLines.slice(-5).join('\n');
     if (tail.includes('Completed successfully')) return '✅';
     if (tail.includes('FAILED') && !tail.includes('Invoking Claude')) return '❌';
-    if (tail.includes('Invoking Claude') || tail.includes('Phase')) return '⏳';
+    if (tail.includes('Invoking Claude') || tail.includes('Phase')) return '▶️';
     return '🔄';
   }
 
@@ -759,10 +782,10 @@ bot.command('status', async (ctx) => {
     if (hasAnyLog) {
       const allDone = agentLines.every(l => l.includes('✅'));
       const anyFail = agentLines.some(l => l.includes('❌'));
-      const anyRunning = agentLines.some(l => l.includes('⏳') || l.includes('🔄'));
+      const anyRunning = agentLines.some(l => l.includes('▶️') || l.includes('🔄'));
       if (allDone) stageIcon = '✅';
       else if (anyFail) stageIcon = '❌';
-      else if (anyRunning) stageIcon = '⏳';
+      else if (anyRunning) stageIcon = '▶️';
     } else if (rerunStages && rerunStages.includes(num)) {
       stageIcon = '⏳';  // queued for rerun but not started yet
     }
@@ -1170,15 +1193,32 @@ bot.command('continue', async (ctx) => {
     try { briefData = JSON.parse(fs.readFileSync(briefPath, 'utf-8')); } catch {}
   }
 
-  // Determine video mode: user flag > existing files > default quick
-  const videoDir = path.join(absOut, 'video');
-  const audioDir = path.join(absOut, 'audio');
-  const hasScenePlan = fs.existsSync(videoDir) && fs.readdirSync(videoDir).some(f => f.includes('scene_plan'));
-  const hasNarration = fs.existsSync(audioDir) && fs.readdirSync(audioDir).some(f => f.includes('narration'));
-  // Quick always runs; pro is additional when requested or detected
-  const videoPro = userRequestedPro || (!userRequestedQuick && (hasScenePlan || hasNarration));
-  const videoQuick = true;
-  const videoMode = videoPro ? 'both' : 'quick';
+  // Determine video mode: user flag > saved payload > existing files > default quick
+  let originalPayload = null;
+  const savedPayloadPath = path.join(absOut, 'campaign_payload.json');
+  if (fs.existsSync(savedPayloadPath)) {
+    try { originalPayload = JSON.parse(fs.readFileSync(savedPayloadPath, 'utf-8')); } catch {}
+  }
+
+  let videoPro, videoQuick, videoMode;
+  if (userRequestedPro || userRequestedQuick) {
+    // User explicitly specified — use their choice
+    videoPro = userRequestedPro;
+    videoQuick = true;
+  } else if (originalPayload?.video_mode) {
+    // Inherit from saved payload
+    videoPro = originalPayload.video_pro === true;
+    videoQuick = originalPayload.video_quick !== false;
+  } else {
+    // Fallback: detect from existing files
+    const videoDir = path.join(absOut, 'video');
+    const audioDir = path.join(absOut, 'audio');
+    const hasScenePlan = fs.existsSync(videoDir) && fs.readdirSync(videoDir).some(f => f.includes('scene_plan'));
+    const hasNarration = fs.existsSync(audioDir) && fs.readdirSync(audioDir).some(f => f.includes('narration'));
+    videoPro = hasScenePlan || hasNarration;
+    videoQuick = true;
+  }
+  videoMode = videoPro ? 'both' : 'quick';
 
   const payload = {
     task_name: campaignFolder,
@@ -1228,10 +1268,11 @@ bot.command('continue', async (ctx) => {
   const imgLabels = { brand: 'marca', screenshot: 'screenshots do site', api: 'IA (API)', free: 'banco gratis' };
   const imgInfo = imageSource !== 'brand' ? `\nImagens: <b>${imgLabels[imageSource] || imageSource}</b>` : '';
   const urlInfo = screenshotUrls.length > 0 ? `\nURLs: ${screenshotUrls.join(', ')}` : '';
+  const videoInfo = `\nVideo Quick: <b>${videoQuick ? '1' : '0'}</b> | Video Pro: <b>${videoPro ? '1' : '0'}</b>`;
 
   await ctx.reply(
     `<b>Continuar: ${campaignFolder}</b>\n` +
-    `Projeto: <code>${projectDir}</code>${imgInfo}${urlInfo}\n\n` +
+    `Projeto: <code>${projectDir}</code>${imgInfo}${videoInfo}${urlInfo}\n\n` +
     statusLines.join('\n') + '\n\n' +
     `Vai executar ${missingStages.length} etapa(s) pendente(s).\n` +
     `Responda <b>sim</b> para iniciar.`,
@@ -1394,7 +1435,7 @@ bot.command('rerun', async (ctx) => {
     approval_modes: { stage1: 'auto', stage2: 'auto', stage3: 'auto', stage4: 'auto', stage5: 'auto' },
     notifications: true,
     skip_dependencies: true,
-    skip_completed: true,
+    skip_completed: false,  // rerun always generates new content
   };
 
   const stageLabels = { 1: 'Brief & Narrativa', 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuicao' };
@@ -1411,10 +1452,11 @@ bot.command('rerun', async (ctx) => {
   const imgLabels = { brand: 'marca', screenshot: 'screenshots do site', api: 'IA (API)', free: 'banco gratis', folder: 'pasta customizada' };
   const imgInfo = imageSource !== 'brand' ? `\nImagens: <b>${imgLabels[imageSource] || imageSource}</b>` : '';
   const urlInfo = screenshotUrls.length > 0 ? `\nURLs: ${screenshotUrls.join(', ')}` : '';
+  const videoInfo = (videoQuick || videoPro) ? `\nVideo Quick: <b>${videoQuick ? '1' : '0'}</b> | Video Pro: <b>${videoPro ? '1' : '0'}</b>` : '';
 
   await ctx.reply(
     `<b>Reprocessar: ${campaignFolder}</b>\n` +
-    `Projeto: <code>${projectDir}</code>${imgInfo}${urlInfo}\n\n` +
+    `Projeto: <code>${projectDir}</code>${imgInfo}${videoInfo}${urlInfo}\n\n` +
     `Etapas:\n${stageList}\n\n` +
     `Responda <b>sim</b> para iniciar.`,
     { parse_mode: 'HTML' }
@@ -1586,64 +1628,33 @@ Keep the same JSON structure. Only modify what the feedback requests.`;
 
           await ctx.reply(`Etapa ${stageNum}/5 — ${stageLabels[stageNum]}...`).catch(() => {});
 
-          // Spawn worker for this stage
-          const worker = spawn('node', ['pipeline/worker.js'], {
-            cwd: PROJECT_ROOT,
-            env: { ...process.env },
-          });
+          // Ensure worker is running (use existing if available)
+          const worker = ensureWorker();
 
           await _enqueueStage(payload, agentNames);
 
-          // Wait for worker to finish all jobs
+          // Wait for all agents to complete by polling log files
+          const expected = agentNames.length;
           await new Promise((resolve) => {
-            let jobsDone = 0;
-            const expected = agentNames.length;
-            worker.stdout.on('data', (d) => {
-              const txt = d.toString();
-              console.log('[rerun]', txt.slice(0, 200));
-
-              // Auto-approve internal gates
-              if (txt.includes('[IMAGE_APPROVAL_NEEDED]')) {
-                const match = txt.match(/\[IMAGE_APPROVAL_NEEDED\]\s*(\S+)/);
-                if (match) {
-                  const ap = path.resolve(PROJECT_ROOT, match[1], 'imgs', 'approved.json');
-                  fs.mkdirSync(path.dirname(ap), { recursive: true });
-                  fs.writeFileSync(ap, JSON.stringify({ approved: true, by: 'rerun', ts: Date.now() }));
-                }
+            const logsDir = path.resolve(PROJECT_ROOT, payload.output_dir, 'logs');
+            const checkInterval = setInterval(() => {
+              if (!fs.existsSync(logsDir)) return;
+              let done = 0;
+              for (const a of agentNames) {
+                const logFile = path.join(logsDir, `${a}.log`);
+                if (!fs.existsSync(logFile)) continue;
+                const content = fs.readFileSync(logFile, 'utf-8');
+                if (content.includes('Completed successfully') || content.includes('FAILED')) done++;
               }
-              if (txt.includes('[VIDEO_APPROVAL_NEEDED]')) {
-                const match = txt.match(/\[VIDEO_APPROVAL_NEEDED\]\s*(\S+)/);
-                if (match) {
-                  const ap = path.resolve(PROJECT_ROOT, match[1], 'video', 'approved.json');
-                  fs.mkdirSync(path.dirname(ap), { recursive: true });
-                  fs.writeFileSync(ap, JSON.stringify({ approved: true, by: 'rerun', ts: Date.now() }));
-                }
-              }
-
-              // Track completions
-              if (txt.includes('Job completed:')) jobsDone++;
-              if (txt.includes('Job failed:')) jobsDone++;
-              if (jobsDone >= expected) {
-                worker.kill('SIGTERM');
+              if (done >= expected) {
+                clearInterval(checkInterval);
+                if (worker) worker.kill('SIGTERM');
                 resolve();
               }
-
-              // Send images live
-              if (txt.includes('[STAGE2_IMAGE_READY]')) {
-                const match = txt.match(/\[STAGE2_IMAGE_READY\]\s*\S+\s+(\S+)/);
-                if (match && fs.existsSync(match[1])) {
-                  bot.api.sendPhoto(chatId, new InputFile(match[1]), { caption: path.basename(match[1]) }).catch(() => {});
-                }
-              }
-            });
-
-            worker.stderr.on('data', (d) => {
-              const txt = d.toString();
-              if (txt.includes('Error')) console.error('[rerun stderr]', txt.slice(0, 200));
-            });
+            }, 5000);
 
             // Timeout 30 min per stage
-            setTimeout(() => { worker.kill('SIGTERM'); resolve(); }, 1800000);
+            setTimeout(() => { clearInterval(checkInterval); if (worker) worker.kill('SIGTERM'); resolve(); }, 1800000);
           });
         }
 
@@ -1710,6 +1721,40 @@ Keep the same JSON structure. Only modify what the feedback requests.`;
     if (isCancel) {
       session.clearPendingCampaign(chatId);
       await ctx.reply('Campanha cancelada.');
+      return;
+    }
+
+    // Quick config commands before confirming
+    if (/^auto$/.test(lower)) {
+      s.pendingCampaign.approval_modes = { stage1: 'auto', stage2: 'auto', stage3: 'auto', stage4: 'auto', stage5: 'auto' };
+      await ctx.reply('✅ Todas as aprovações definidas como <b>auto</b>.', { parse_mode: 'HTML' });
+      showCampaignConfirmation(ctx, chatId, s.pendingCampaign);
+      return;
+    }
+    if (/^(notif|notifica).*(off|desativ|nao|não)/.test(lower)) {
+      s.pendingCampaign.notifications = false;
+      await ctx.reply('🔇 Notificações desativadas.');
+      showCampaignConfirmation(ctx, chatId, s.pendingCampaign);
+      return;
+    }
+    if (/^(notif|notifica).*(on|ativ|sim)/.test(lower)) {
+      s.pendingCampaign.notifications = true;
+      await ctx.reply('🔔 Notificações ativadas.');
+      showCampaignConfirmation(ctx, chatId, s.pendingCampaign);
+      return;
+    }
+    if (/^pro$/.test(lower)) {
+      s.pendingCampaign.video_pro = true;
+      s.pendingCampaign.video_quick = true;
+      s.pendingCampaign.video_mode = 'both';
+      await ctx.reply('✅ Video Pro adicionado.');
+      showCampaignConfirmation(ctx, chatId, s.pendingCampaign);
+      return;
+    }
+    if (/^humano$/.test(lower)) {
+      s.pendingCampaign.approval_modes = { stage1: 'humano', stage2: 'humano', stage3: 'humano', stage4: 'humano', stage5: 'humano' };
+      await ctx.reply('✅ Todas as aprovações definidas como <b>humano</b>.', { parse_mode: 'HTML' });
+      showCampaignConfirmation(ctx, chatId, s.pendingCampaign);
       return;
     }
 
@@ -1895,10 +1940,10 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
     lines.push(`<b>Fluxo:</b> gerar imagens → você aprova → montar criativos e vídeo`);
   }
 
-  const audioLabels = { narration: '🎙 Narração (voz)', music: '🎵 Música de fundo', both: '🎙🎵 Narração + Música', none: '🔇 Sem áudio' };
+  const vQuick = payload.video_quick ? '1' : '0';
+  const vPro = payload.video_pro ? '1' : '0';
   lines.push(
-    `<b>Videos:</b> ${payload.video_count}`,
-    `<b>Áudio do vídeo:</b> ${audioLabels[payload.video_audio] || '🎙 Narração (padrão)'}`,
+    `<b>Video Quick:</b> ${vQuick} | <b>Video Pro:</b> ${vPro}`,
     `<b>Idioma:</b> ${payload.language}`,
   );
 
@@ -1908,7 +1953,7 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   const modes = payload.approval_modes || {};
   const modeLabel = { humano: '👤', agente: '🤖', auto: '⚡' };
   const modeNames = { humano: 'humano', agente: 'agente', auto: 'auto' };
-  const stageNames = { stage1: 'Brief & Narrativa', stage2: 'Visuais', stage3: 'Copy Plataforma', stage4: 'Distribuição' };
+  const stageNames = { stage1: 'Brief', stage2: 'Imagens', stage3: 'Video', stage4: 'Plataformas', stage5: 'Distribuição' };
   const modeParts = Object.entries(stageNames).map(([key, label]) => {
     const m = modes[key] || 'humano';
     return `${modeLabel[m] || '👤'} ${label}`;
@@ -1920,8 +1965,11 @@ async function showCampaignConfirmation(ctx, chatId, payload) {
   if (isApi && payload.use_brand_overlay === undefined) {
     payload = { ...payload, use_brand_overlay: true };
   }
-  lines.push(`\nResponda <b>sim</b> para rodar ou <b>não</b> para cancelar.`);
-  lines.push(`Ou ajuste o que quiser e eu reorganizo.`);
+  lines.push(`\nResponda <b>sim</b> para rodar ou ajuste antes:`);
+  lines.push(`• <code>auto</code> — aprovação automática em todas etapas`);
+  lines.push(`• <code>notif off</code> / <code>notif on</code> — notificações`);
+  lines.push(`• <code>pro</code> — adicionar video pro`);
+  lines.push(`• <code>não</code> — cancelar`);
   session.setPendingCampaign(chatId, payload);
 
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
@@ -1967,6 +2015,8 @@ Return a JSON object with these fields:
   "image_count": 5,
   "image_formats": ["carousel_1080x1080", "story_1080x1920"],
   "video_count": 1,
+  "video_quick": true,
+  "video_pro": false,
   "image_source": "brand",
   "image_model": "${process.env.KIE_DEFAULT_MODEL || 'z-image'}",
   "approval_modes": {
@@ -1985,6 +2035,8 @@ Rules:
 - task_name: derive from the campaign theme, short and snake_case
 - image_count: default 5 for carousel; use what user says
 - video_count: how many videos requested (default 1)
+- video_quick: always true unless user explicitly says "sem video quick" or "only pro"
+- video_pro: true if user says "video pro", "video profissional", "remotion", "pro", "both", "2 videos"
 - image_source: "brand" (or "marca") if user mentions brand images, project images, fotos da marca; "free" (or "gratis") if user mentions free stock photos, banco de imagens, pexels, unsplash, pixabay; "api" if user mentions AI generation, gerar imagens, criar imagens com IA; "folder" (or "pasta") if user specifies a folder path; "screenshot" (or "captura") if user mentions screenshot, captura de site, print do site, capturar pagina. When screenshot, also populate "screenshot_urls" with any URLs mentioned. Default "brand".
 - image_model: only relevant when image_source is "api". Default is ALWAYS "${process.env.KIE_DEFAULT_MODEL || 'z-image'}" (from .env). Only change if the user explicitly requests a different model. Options: "z-image", "z-image-turbo", "flux-kontext-pro", "flux-kontext-max", "gpt-image-1".
 - approval_modes: each stage can be "humano" (user must approve), "agente" (AI reviewer decides), or "auto" (advance automatically). Default "humano" for all. Set to "auto" if user says "sem aprovações", "automático", "full auto". Set to "agente" if user says "aprovação por agente", "agente revisa".
@@ -2006,6 +2058,11 @@ Rules:
       if (!userPickedModel) {
         payload.image_model = process.env.KIE_DEFAULT_MODEL || 'z-image';
       }
+
+      // Ensure video_quick/pro defaults and derive video_mode
+      payload.video_quick = payload.video_quick !== false;
+      payload.video_pro = payload.video_pro === true;
+      payload.video_mode = payload.video_pro ? (payload.video_quick ? 'both' : 'pro') : 'quick';
 
       callback(payload);
     } catch {
@@ -2078,11 +2135,13 @@ Be concise and helpful. You have full access to the codebase.`;
 function runPipeline(ctx, chatId, payload, outputDir) {
   const payloadStr = JSON.stringify(payload);
 
-  // Store chatId in output dir so bot can notify the right chat after restart
+  // Store chatId and payload in output dir for restart recovery
   const absOutputDir = path.resolve(PROJECT_ROOT, outputDir);
   fs.mkdirSync(absOutputDir, { recursive: true });
   fs.writeFileSync(path.join(absOutputDir, 'chat_context.json'),
     JSON.stringify({ chatId: String(chatId), ts: Date.now() }));
+  fs.writeFileSync(path.join(absOutputDir, 'campaign_payload.json'),
+    JSON.stringify(payload, null, 2));
 
   // Step 1: enqueue jobs
   const orch = spawn('node', [
@@ -2103,11 +2162,12 @@ function runPipeline(ctx, chatId, payload, outputDir) {
 
     ctx.reply('Jobs enfileirados. Iniciando worker...');
 
-    // Step 2: start worker
-    const worker = spawn('node', ['pipeline/worker.js'], {
-      cwd: PROJECT_ROOT,
-      env: { ...process.env },
-    });
+    // Step 2: start worker (only if not already running)
+    const worker = ensureWorker();
+    if (!worker) {
+      ctx.reply('Worker já rodando — jobs serão processados automaticamente.');
+      return;
+    }
 
     let lastUpdate = '';
     worker.stdout.on('data', (d) => {
@@ -2216,6 +2276,8 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
   fs.mkdirSync(absOutputDir, { recursive: true });
   fs.writeFileSync(path.join(absOutputDir, 'chat_context.json'),
     JSON.stringify({ chatId: String(chatId), ts: Date.now() }));
+  fs.writeFileSync(path.join(absOutputDir, 'campaign_payload.json'),
+    JSON.stringify(payload, null, 2));
 
   const approvalModes = payload.approval_modes || {
     stage1: 'humano', stage2: 'humano', stage3: 'humano', stage4: 'humano', stage5: 'humano',
@@ -2242,13 +2304,10 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
     api: bot.api,
   };
 
-  // Start worker — stays alive for the entire campaign
-  const worker = spawn('node', ['pipeline/worker.js'], {
-    cwd: PROJECT_ROOT,
-    env: { ...process.env },
-  });
+  // Start worker — stays alive for the entire campaign (skip if already running)
+  const worker = ensureWorker();
 
-  worker.stdout.on('data', (d) => {
+  if (worker) worker.stdout.on('data', (d) => {
     const text = d.toString();
     console.log('[worker]', text.slice(0, 200));
 
@@ -2412,7 +2471,7 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
         if (STAGES.stage5.includes(agentName)) {
           stageAgentsDone.stage5.add(agentName);
           if (STAGES.stage5.every(a => stageAgentsDone.stage5.has(a))) {
-            worker.kill('SIGTERM');
+            if (worker) worker.kill('SIGTERM');
             session.clearRunningTask(chatId);
             session.clearCampaignV3(chatId);
             const folderName = payload.task_name;
@@ -2434,7 +2493,7 @@ function runPipelineV3(ctx, chatId, payload, outputDir) {
     }
   });
 
-  worker.stderr.on('data', (d) => {
+  if (worker) worker.stderr.on('data', (d) => {
     const text = d.toString();
     if (text.includes('Error') || text.includes('error')) {
       console.error('[worker stderr]', text.slice(0, 200));
@@ -2565,6 +2624,20 @@ async function sendStageApprovalRequest(ctx, chatId, stage) {
   session.setPendingStageApproval(chatId, { stage, type: 'humano' });
 
   if (stage === 1) {
+    // Send research report files
+    const reportPath = path.join(PROJECT_ROOT, outputDir, 'interactive_report.html');
+    const briefMdPath = path.join(PROJECT_ROOT, outputDir, 'research_brief.md');
+    if (fs.existsSync(reportPath)) {
+      await bot.api.sendDocument(chatId, new InputFile(reportPath), {
+        caption: '📊 Relatório interativo da pesquisa'
+      }).catch(() => {});
+    }
+    if (fs.existsSync(briefMdPath)) {
+      await bot.api.sendDocument(chatId, new InputFile(briefMdPath), {
+        caption: '📋 Research Brief'
+      }).catch(() => {});
+    }
+
     const briefPath = path.join(PROJECT_ROOT, outputDir, 'creative', 'creative_brief.md');
     if (fs.existsSync(briefPath)) {
       const brief = fs.readFileSync(briefPath, 'utf-8');
@@ -3275,20 +3348,293 @@ function readChatContext(campDir) {
   } catch { return null; }
 }
 
+// ── Resume in-progress campaigns after restart ──────────────────────────────
+async function resumeInProgressCampaigns() {
+  const prjRoot = path.resolve(PROJECT_ROOT, 'prj');
+  if (!fs.existsSync(prjRoot)) return;
+
+  const stageAgentMap = {
+    1: ['research_agent', 'creative_director', 'copywriter_agent'],
+    2: ['ad_creative_designer'],
+    3: ['video_quick', 'video_pro'],
+    4: ['platform_instagram', 'platform_youtube', 'platform_tiktok', 'platform_facebook', 'platform_threads', 'platform_linkedin'],
+    5: ['distribution_agent'],
+  };
+
+  for (const prj of fs.readdirSync(prjRoot)) {
+    const outRoot = path.join(prjRoot, prj, 'outputs');
+    if (!fs.existsSync(outRoot)) continue;
+
+    for (const campaign of fs.readdirSync(outRoot)) {
+      const campDir = path.join(outRoot, campaign);
+      const payloadPath = path.join(campDir, 'campaign_payload.json');
+      const ctxFile = readChatContext(campDir);
+      if (!ctxFile?.chatId || !fs.existsSync(payloadPath)) continue;
+
+      let payload;
+      try { payload = JSON.parse(fs.readFileSync(payloadPath, 'utf-8')); } catch { continue; }
+
+      const chatId = ctxFile.chatId;
+      const logsDir = path.join(campDir, 'logs');
+      if (!fs.existsSync(logsDir)) continue;
+
+      // Determine highest completed stage
+      let highestDone = 0;
+      let allComplete = true;
+      for (let stage = 1; stage <= 5; stage++) {
+        let agents = stageAgentMap[stage];
+        if (stage === 3) {
+          agents = [];
+          if (payload.video_quick !== false) agents.push('video_quick');
+          if (payload.video_pro === true) agents.push('video_pro');
+          if (agents.length === 0) agents = ['video_quick'];
+        }
+        if (stage === 4) {
+          const targets = payload.platform_targets || [];
+          agents = stageAgentMap[4].filter(a => targets.includes(a.replace('platform_', '')));
+        }
+
+        let stageDone = agents.length > 0;
+        for (const a of agents) {
+          const logFile = path.join(logsDir, `${a}.log`);
+          if (!fs.existsSync(logFile)) { stageDone = false; break; }
+          const content = fs.readFileSync(logFile, 'utf-8');
+          if (!content.includes('Completed successfully')) { stageDone = false; break; }
+        }
+        if (stageDone) highestDone = stage;
+        else { allComplete = false; break; }
+      }
+
+      // Skip fully completed campaigns
+      if (allComplete || highestDone === 5) continue;
+      // Skip campaigns with no progress
+      if (highestDone === 0 && !fs.readdirSync(logsDir).length) continue;
+
+      console.log(`[resume] Campaign ${campaign} — stage ${highestDone} done, resuming from stage ${highestDone + 1}`);
+
+      // Restore session state
+      const outputDir = `prj/${prj}/outputs/${campaign}`;
+      const videoMode = payload.video_pro ? 'both' : 'quick';
+      session.setRunningTask(chatId, {
+        taskName: campaign,
+        taskDate: payload.task_date,
+        outputDir,
+        startedAt: new Date().toISOString(),
+        videoMode,
+      });
+      session.setCampaignV3(chatId, {
+        payload,
+        outputDir,
+        currentStage: highestDone + 1,
+        approvalModes: payload.approval_modes || {},
+        notifications: payload.notifications !== false,
+      });
+
+      // Notify user
+      bot.api.sendMessage(chatId,
+        `🔄 Campanha <b>${campaign}</b> estava em andamento (etapa ${highestDone}/5 completa).\n` +
+        `Continuando a partir da etapa ${highestDone + 1}...\n` +
+        `Use <code>/cancel</code> para cancelar.`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+
+      // The signal monitor will detect stage completions and auto-advance
+    }
+  }
+}
+
 bot.start({
   onStart: async (botInfo) => {
     console.log(`Bot @${botInfo.username} rodando (long-polling)`);
     console.log(`Projeto padrao: ${session.DEFAULT_PROJECT}`);
     console.log('Ctrl+C para parar.\n');
 
-    // Kill any stale worker processes from previous bot sessions
-    try {
-      const { spawnSync } = require('child_process');
-      spawnSync('pkill', ['-f', 'pipeline/worker.js'], { stdio: 'ignore' });
-      console.log('Stale workers cleared.');
-    } catch (_) { /* none running */ }
+    // Check for existing workers (no longer killing them — they may be valid)
+    if (isWorkerRunning()) {
+      console.log('Worker already running — will use existing.');
+    } else {
+      console.log('No worker running — will spawn on demand.');
+    }
 
     // Scan for pending approvals left over from before restart
     await scanPendingApprovals(null, null);
+
+    // Resume in-progress campaigns
+    await resumeInProgressCampaigns();
+
+    // ── Continuous signal monitor ───────────────────────────────────────────
+    // Polls for worker signal files every 10s so the bot detects events
+    // even when the worker runs as a separate process (not as child process).
+    const monitoredSignals = new Set(); // track already-handled signals
+    setInterval(async () => {
+      // Find all active campaigns with chat context
+      const prjRoot = path.resolve(PROJECT_ROOT, 'prj');
+      if (!fs.existsSync(prjRoot)) return;
+
+      for (const prj of fs.readdirSync(prjRoot)) {
+        const outRoot = path.join(prjRoot, prj, 'outputs');
+        if (!fs.existsSync(outRoot)) continue;
+        for (const campaign of fs.readdirSync(outRoot)) {
+          const campDir = path.join(outRoot, campaign);
+          const relDir = `prj/${prj}/outputs/${campaign}`;
+          const ctx2 = readChatContext(campDir);
+          if (!ctx2?.chatId) continue;
+          const chatId = ctx2.chatId;
+
+          // 1. Image generation error — no decision yet
+          const imgErrorLog = path.join(campDir, 'logs', 'api_image_gen.log');
+          const imgDecision = path.join(campDir, 'imgs', 'error_decision.json');
+          const imgErrorKey = `img_error:${relDir}`;
+          if (fs.existsSync(imgErrorLog) && !fs.existsSync(imgDecision) && !monitoredSignals.has(imgErrorKey)) {
+            const logContent = fs.readFileSync(imgErrorLog, 'utf-8');
+            if (logContent.includes('[IMAGE_GEN_ERROR]') && logContent.includes('waiting for user decision')) {
+              monitoredSignals.add(imgErrorKey);
+              const errorLine = logContent.split('\n').reverse().find(l => l.includes('Failed image')) || 'Todas as imagens falharam';
+              const errorMsg = errorLine.replace(/.*Failed image \d+: /, '');
+              session.setPendingImageError(chatId, { outputDir: relDir });
+              bot.api.sendMessage(chatId,
+                `⚠️ <b>Erro na geração de imagens</b>\n\n<code>${errorMsg}</code>\n\n` +
+                `O que deseja fazer?\n` +
+                `• <b>avançar</b> — continuar sem imagens (CSS)\n` +
+                `• <b>tentar novamente</b> — repetir a geração\n` +
+                `• <b>outra fonte</b> — trocar: api, free, brand, pasta xxx\n` +
+                `• <b>cancelar</b> — cancelar a campanha`,
+                { parse_mode: 'HTML' }
+              ).catch(e => console.error('[monitor] img error send failed:', e.message));
+            }
+          }
+          // Clear signal if decision was made
+          if (fs.existsSync(imgDecision) && monitoredSignals.has(imgErrorKey)) {
+            monitoredSignals.delete(imgErrorKey);
+          }
+
+          // 2. Video approval needed
+          const videoSignal = path.join(campDir, 'video', 'approval_needed.json');
+          const videoApproved = path.join(campDir, 'video', 'approved.json');
+          const videoRejected = path.join(campDir, 'video', 'rejected.json');
+          const videoKey = `video_approval:${relDir}`;
+          if (fs.existsSync(videoSignal) && !fs.existsSync(videoApproved) && !fs.existsSync(videoRejected) && !monitoredSignals.has(videoKey)) {
+            monitoredSignals.add(videoKey);
+            session.setPendingVideoApproval(chatId, { outputDir: relDir, type: 'video' });
+            sendVideoApprovalRequest(bot, chatId, relDir).catch(e =>
+              console.error('[monitor] video approval send failed:', e.message)
+            );
+          }
+          if ((fs.existsSync(videoApproved) || fs.existsSync(videoRejected)) && monitoredSignals.has(videoKey)) {
+            monitoredSignals.delete(videoKey);
+          }
+
+          // 3. Image approval needed
+          const imgApprovalSignal = path.join(campDir, 'imgs', 'approval_needed.json');
+          const imgApproved = path.join(campDir, 'imgs', 'approved.json');
+          const imgRejected = path.join(campDir, 'imgs', 'rejected.json');
+          const imgApprovalKey = `img_approval:${relDir}`;
+          if (fs.existsSync(imgApprovalSignal) && !fs.existsSync(imgApproved) && !fs.existsSync(imgRejected) && !monitoredSignals.has(imgApprovalKey)) {
+            monitoredSignals.add(imgApprovalKey);
+            session.setPendingVideoApproval(chatId, { outputDir: relDir, type: 'images' });
+            sendImageApprovalRequest(bot, chatId, relDir).catch(e =>
+              console.error('[monitor] img approval send failed:', e.message)
+            );
+          }
+          if ((fs.existsSync(imgApproved) || fs.existsSync(imgRejected)) && monitoredSignals.has(imgApprovalKey)) {
+            monitoredSignals.delete(imgApprovalKey);
+          }
+
+          // 4. Stage completion tracking — detect agent completions from log files
+          const s = session.get(chatId);
+          const cv = s?.campaignV3;
+          if (cv && s.runningTask) {
+            const logsDir = path.join(campDir, 'logs');
+            if (!fs.existsSync(logsDir)) continue;
+
+            const stageAgentMap = {
+              1: ['research_agent', 'creative_director', 'copywriter_agent'],
+              2: ['ad_creative_designer'],
+              3: ['video_quick', 'video_pro'],
+              4: ['platform_instagram', 'platform_youtube', 'platform_tiktok', 'platform_facebook', 'platform_threads', 'platform_linkedin'],
+              5: ['distribution_agent'],
+            };
+
+            for (const [stageNum, agents] of Object.entries(stageAgentMap)) {
+              const num = Number(stageNum);
+              const stageKey = `stage_done:${relDir}:${num}`;
+              if (monitoredSignals.has(stageKey)) continue;
+
+              // Determine which agents are active for this stage
+              let activeAgents = agents;
+              if (num === 3) {
+                const vq = cv.payload?.video_quick !== false;
+                const vp = cv.payload?.video_pro === true;
+                activeAgents = [];
+                if (vq) activeAgents.push('video_quick');
+                if (vp) activeAgents.push('video_pro');
+                if (activeAgents.length === 0) activeAgents = ['video_quick'];
+              }
+              if (num === 4) {
+                const targets = cv.payload?.platform_targets || [];
+                activeAgents = agents.filter(a => targets.includes(a.replace('platform_', '')));
+              }
+
+              // Check if all active agents completed
+              let allDone = activeAgents.length > 0;
+              let anyStarted = false;
+              for (const a of activeAgents) {
+                const logFile = path.join(logsDir, `${a}.log`);
+                if (!fs.existsSync(logFile)) { allDone = false; continue; }
+                anyStarted = true;
+                const content = fs.readFileSync(logFile, 'utf-8');
+                if (!content.includes('Completed successfully')) allDone = false;
+              }
+
+              if (allDone && anyStarted) {
+                monitoredSignals.add(stageKey);
+                console.log(`[monitor] Stage ${num} completed for ${relDir}`);
+
+                // Notify
+                if (cv.notifications !== false) {
+                  const stageNames = { 1: 'Brief & Narrativa', 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuição' };
+                  bot.api.sendMessage(chatId, `✅ Etapa ${num} concluída — ${stageNames[num]}`, { parse_mode: 'HTML' }).catch(() => {});
+                }
+
+                // Ensure strict sequential ordering — all previous stages must be done
+                let canAdvance = true;
+                for (let prevStage = 1; prevStage < num; prevStage++) {
+                  const prevKey = `stage_done:${relDir}:${prevStage}`;
+                  if (!monitoredSignals.has(prevKey)) { canAdvance = false; break; }
+                }
+                if (!canAdvance) continue;
+
+                // Auto-advance: enqueue next stage if approval mode is auto
+                const approvalMode = cv.payload?.approval_modes?.[`stage${num}`] || 'auto';
+                if (approvalMode === 'auto' && num < 5) {
+                  const nextStage = num + 1;
+                  const nextStageKey = `stage${nextStage}`;
+                  const nextAgents = STAGES[nextStageKey];
+                  if (nextAgents) {
+                    console.log(`[monitor] Auto-advancing to stage ${nextStage}`);
+                    session.setCampaignV3Stage(chatId, nextStage);
+                    _enqueueStage(cv.payload, nextAgents)
+                      .then(() => {
+                        const stageNames = { 2: 'Imagens', 3: 'Video', 4: 'Plataformas', 5: 'Distribuição' };
+                        if (cv.notifications !== false) {
+                          bot.api.sendMessage(chatId, `▶️ Etapa ${nextStage} iniciando — ${stageNames[nextStage]}`, { parse_mode: 'HTML' }).catch(() => {});
+                        }
+                      })
+                      .catch(e => console.error(`[monitor] Failed to enqueue stage ${nextStage}:`, e.message));
+                  }
+                }
+
+                // Stage 5 complete — campaign done
+                if (num === 5) {
+                  session.clearRunningTask(chatId);
+                  session.clearCampaignV3(chatId);
+                  bot.api.sendMessage(chatId, `🎉 Campanha <b>${s.runningTask.taskName}</b> concluída!`, { parse_mode: 'HTML' }).catch(() => {});
+                }
+              }
+            }
+          }
+        }
+      }
+    }, 10000); // every 10 seconds
   },
 });
