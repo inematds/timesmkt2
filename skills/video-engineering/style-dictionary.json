@@ -237,9 +237,51 @@
         "color_grading_unified": true
       },
 
+      "hud_protocol": {
+        "enabled": true,
+        "comment": "Protocolo HUD — espectador sente que está dentro de interface de IA",
+
+        "unity_layer": {
+          "grain": 0.03,
+          "grain_type": "monochromatic",
+          "vignette": "pi/3.5",
+          "chromatic_aberration": 1.5,
+          "force_dark": "brightness=-0.1, saturation=0.8 em imagens claras",
+          "ffmpeg": "colorlevels=rimin=0.05:gimin=0.05:bimin=0.05,noise=alls=7:allf=t+u,vignette=pi/3.5"
+        },
+
+        "interface_elements": {
+          "brackets": "Todo título importante entre [ COLCHETES ] animados",
+          "scanning_line": { "opacity": 0.05, "speed": "30 frames full cycle", "color": "cyan" },
+          "data_points": { "opacity": 0.2, "content": "binary/hex codes", "position": "corners", "font": "monospace 10px" },
+          "coordinates": "Coordenadas X/Y sutis nos cantos"
+        },
+
+        "camera_breathing": {
+          "comment": "Pulso orgânico — substitui zoom linear mecânico",
+          "scale_noise": { "type": "perlin", "amplitude": 0.02, "frequency": "low" },
+          "rotation_noise": { "amplitude": 0.1, "unit": "degrees" },
+          "effect": "sensação de bastidores/cinema, mesmo em imagens estáticas"
+        },
+
+        "glitch_transitions": {
+          "comment": "Rupturas de dados entre cenas — NÃO crossfade",
+          "duration_frames": 3,
+          "effects": ["rgb_split", "chromatic_aberration", "zoom_10percent"],
+          "ffmpeg": "lutrgb=r='val*1.2':g='val*0.8':b='val*1.1',zoompan=z='zoom+0.1':d=3",
+          "when": "entre TODAS as cenas, não só entre seções"
+        },
+
+        "lighting": {
+          "shadows": "pesadas, escuras",
+          "highlights": "neon (azul #0099FF ou verde #00FF88)",
+          "never": "flat, clean, corporate — SEMPRE dramático"
+        }
+      },
+
       "mood": "high-tech, innovation, empowerment, urgency, conversion",
 
-      "prompt_instruction": "Gere componente Remotion para INEMA. Use Modelo 14 (Short Vertical). Imagens com escala progressiva 1.08x. Tipografia Cinética (Modelo 13) com spring nos headlines. Cores unificadas tom futurista azulado. CTA final com pulso de brilho (glow). Whip pan entre seções. Sound design com beeps digitais."
+      "prompt_instruction": "Protocolo HUD ativo. UNIDADE: granulado 3% + vinheta em todas as cenas. INTERFACE: texto com colchetes, scan line, dados binários nos cantos. MOVIMENTO: Camera Breathing (Perlin noise na escala 1.0-1.02). TRANSIÇÃO: Chromatic Aberration + RGB Shift nos cortes (glitch de dados, 3 frames). ILUMINAÇÃO: sombras pesadas + highlights neon azul/verde. TIPOGRAFIA: Oswald/Montserrat com spring scale, fontes mono para dados. CTA: glow pulse."
     }
   },
   "universal_rules": {
