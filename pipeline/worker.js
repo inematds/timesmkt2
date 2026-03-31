@@ -404,8 +404,7 @@ function runClaude(prompt, agentName, outputDir, timeoutMs = 600000, { model = '
       '-p', prompt,
       '--dangerously-skip-permissions',
       '--model', model,
-      '--bare',                     // skip hooks, LSP, auto-memory — isolated context
-      '--no-session-persistence',   // don't save session to disk
+      '--no-session-persistence',   // don't save session to disk (lighter, no stale sessions)
     ];
 
     log(outputDir, agentName, `Invoking Claude CLI...`);

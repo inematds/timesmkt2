@@ -49,6 +49,8 @@ interface CameraMotionProps {
   /** Speed ramp stages: array of [inputFrame%, outputProgress%] pairs.
    *  Example: [0, 0.8, 0.2, 1.0] means fast to 80%, slow to 20%, fast to 100% */
   speedRampStages?: number[];
+  /** Image has embedded text — reduce motion to avoid cropping */
+  imageHasText?: boolean;
 }
 
 export const CameraMotion: React.FC<CameraMotionProps> = ({
@@ -63,6 +65,7 @@ export const CameraMotion: React.FC<CameraMotionProps> = ({
   spring_config,
   easing,
   speedRampStages,
+  imageHasText,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -85,14 +88,18 @@ export const CameraMotion: React.FC<CameraMotionProps> = ({
   } else {
     progress = frame / durationInFrames;
   }
-  const i = intensity;
+  // Images with embedded text: minimal motion to avoid cropping text
+  const i = imageHasText ? Math.min(intensity, 0.15) : intensity;
 
   let scale = 1;
   let translateX = 0;
   let translateY = 0;
   let rotate = 0;
 
-  switch (effect) {
+  // Images with text: force minimal motion — never zoom/pan that crops the text
+  const effectToUse = imageHasText ? 'breathe' : effect;
+
+  switch (effectToUse) {
     case 'ken-burns-in':
       scale = 1 + progress * 0.15 * i;
       translateY = -progress * 20 * i;

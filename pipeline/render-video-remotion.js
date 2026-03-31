@@ -205,6 +205,11 @@ function adaptScenePlan(plan) {
         easing: s.motion?.easing || null,
         speed_ramp_stages: s.motion?.speed_ramp_stages || s.speed_ramp_stages || null,
       },
+      // Image has embedded text — reduce motion to avoid cropping
+      // Auto-detect from filename if not explicitly set
+      image_has_text: s.image_has_text || s.has_text || (
+        s.image && /(_post|_stories|carousel_|oficial_|logo_|instagram|facebook|_ad\.)/.test(s.image)
+      ) || false,
       // HUD text mode for tech/futuristic style
       hud_text: s.hud_text || null,
       // Lens transition override

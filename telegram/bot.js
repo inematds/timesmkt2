@@ -3816,6 +3816,39 @@ bot.start({
                 }
                 if (!canAdvance) continue;
 
+                // Send key deliverables even in auto mode
+                if (cv.notifications !== false) {
+                  if (num === 1) {
+                    // Stage 1: send research report
+                    const reportPath = path.join(campDir, 'interactive_report.html');
+                    const briefMdPath = path.join(campDir, 'research_brief.md');
+                    if (fs.existsSync(reportPath)) {
+                      bot.api.sendDocument(chatId, new InputFile(reportPath), {
+                        caption: '📊 Relatório interativo da pesquisa'
+                      }).catch(() => {});
+                    }
+                    if (fs.existsSync(briefMdPath)) {
+                      bot.api.sendDocument(chatId, new InputFile(briefMdPath), {
+                        caption: '📋 Research Brief'
+                      }).catch(() => {});
+                    }
+                  }
+                  if (num === 3) {
+                    // Stage 3: send rendered videos
+                    const videoDir = path.join(campDir, 'video');
+                    if (fs.existsSync(videoDir)) {
+                      for (const f of fs.readdirSync(videoDir)) {
+                        if (f.endsWith('.mp4') && !f.includes('draft')) {
+                          bot.api.sendVideo(chatId, new InputFile(path.join(videoDir, f)), {
+                            caption: `🎬 ${f}`,
+                            supports_streaming: true,
+                          }).catch(() => {});
+                        }
+                      }
+                    }
+                  }
+                }
+
                 // Auto-advance: enqueue next stage if approval mode is auto
                 const approvalMode = cv.payload?.approval_modes?.[`stage${num}`] || 'auto';
                 if (approvalMode === 'auto' && num < 5) {

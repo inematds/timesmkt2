@@ -105,6 +105,8 @@ export interface SceneData {
   // Lens transition for this scene
   lens_transition?: 'rack-focus' | 'whip-blur' | 'defocus-refocus' | 'chromatic-glitch';
   lens_transition_frames?: number;
+  // Image has embedded text — reduce camera motion to avoid cropping
+  image_has_text?: boolean;
 }
 
 export interface SceneProps {
@@ -467,6 +469,7 @@ export const DynamicScene: React.FC<SceneProps> = ({
         spring_config={scene.motion?.spring_config}
         easing={scene.motion?.easing}
         speedRampStages={scene.motion?.speed_ramp_stages}
+        imageHasText={scene.image_has_text}
       >
         {/* Flash transition for 'presente' scenes */}
         {tipo.includes('presente') && <FlashTransition />}
