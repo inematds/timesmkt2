@@ -1847,6 +1847,8 @@ STEP 1 — Read ALL these files:
 - ${project_dir}/knowledge/brand_identity.md
 - ${output_dir}/creative/creative_brief.json
 - skills/photography-director/SKILL.md
+- skills/video-engineering/style-dictionary.json — CRITICAL: exact spring/easing/color values per style
+- skills/video-engineering/SKILL.md — engineering manual
 - skills/video-art-direction/SKILL.md
 - skills/typography-on-image/SKILL.md
 

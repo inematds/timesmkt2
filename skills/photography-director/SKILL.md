@@ -18,8 +18,10 @@
 2. `<output_dir>/creative/creative_brief.json` — ângulo criativo, visual direction
 3. `<output_dir>/audio/<task_name>_video_01_timing.json` — timing exato da narração
 4. `skills/video-art-direction/SKILL.md` — 12 estilos visuais disponíveis
-5. `skills/typography-on-image/SKILL.md` — regras de tipografia magazine
-6. `skills/video-editor-agent/SKILL.md` — regras de edição profissional
+5. `skills/video-engineering/style-dictionary.json` — **CRÍTICO**: valores técnicos (spring, easing, color, zoom) por estilo
+6. `skills/video-engineering/SKILL.md` — manual de engenharia de vídeo
+7. `skills/typography-on-image/SKILL.md` — regras de tipografia magazine
+8. `skills/video-editor-agent/SKILL.md` — regras de edição profissional
 
 ---
 
