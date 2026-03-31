@@ -4,6 +4,13 @@ import { DynamicScene, SceneData } from './scenes/DynamicScene';
 import { Subtitles, SubtitleSegment } from './components/Subtitles';
 import { ProgressBar, ProgressBarStyle } from './components/ProgressBar';
 
+export interface GlobalColorGrading {
+  gamma?: number;
+  saturate?: number;
+  contrast?: number;
+  hueRotate?: number;
+}
+
 export interface ScenePlanProps {
   [key: string]: unknown;
   titulo?: string;
@@ -28,6 +35,8 @@ export interface ScenePlanProps {
   // Progress bar
   progress_bar?: ProgressBarStyle | false;
   progress_bar_color?: string;
+  // Global color grading — applied to ALL scenes uniformly
+  color_grading?: GlobalColorGrading;
 }
 
 // ── Transition wrapper ──────────────────────────────────────────────────────
@@ -111,6 +120,7 @@ export const DynamicAd: React.FC<ScenePlanProps> = (props) => {
     subtitle_style: globalSubtitleStyle,
     progress_bar: progressBarStyle,
     progress_bar_color: progressBarColor,
+    color_grading: globalColorGrading,
   } = props;
 
   const palette: Record<string, string> = {
@@ -128,81 +138,106 @@ export const DynamicAd: React.FC<ScenePlanProps> = (props) => {
 
   const bgColor = palette.coffee_dark || palette.fundo_principal || '#2C1A0E';
 
+  // Build global color grading CSS filter
+  const gradingFilterParts: string[] = [];
+  if (globalColorGrading) {
+    if (globalColorGrading.gamma != null && globalColorGrading.gamma !== 1) {
+      gradingFilterParts.push(`brightness(${globalColorGrading.gamma})`);
+    }
+    if (globalColorGrading.saturate != null && globalColorGrading.saturate !== 1) {
+      gradingFilterParts.push(`saturate(${globalColorGrading.saturate})`);
+    }
+    if (globalColorGrading.contrast != null && globalColorGrading.contrast !== 1) {
+      gradingFilterParts.push(`contrast(${globalColorGrading.contrast})`);
+    }
+    if (globalColorGrading.hueRotate != null && globalColorGrading.hueRotate !== 0) {
+      gradingFilterParts.push(`hue-rotate(${globalColorGrading.hueRotate}deg)`);
+    }
+  }
+  const gradingFilter = gradingFilterParts.length > 0 ? gradingFilterParts.join(' ') : undefined;
+
   return (
     <AbsoluteFill style={{ backgroundColor: bgColor }}>
-      {/* Background music — plays for full video duration */}
-      {background_music && (
-        <Audio
-          src={staticFile(background_music)}
-          volume={background_music_volume}
-        />
-      )}
+      {/* Global color grading wrapper — unifies look across all scenes */}
+      <div style={{
+        position: 'absolute',
+        inset: 0,
+        filter: gradingFilter,
+      }}>
+        {/* Background music — plays for full video duration */}
+        {background_music && (
+          <Audio
+            src={staticFile(background_music)}
+            volume={background_music_volume}
+          />
+        )}
 
-      {/* Continuous narration — single fluid audio over all scenes */}
-      {narration_file && (
-        <Audio
-          src={staticFile(narration_file)}
-          volume={narration_volume}
-        />
-      )}
+        {/* Continuous narration — single fluid audio over all scenes */}
+        {narration_file && (
+          <Audio
+            src={staticFile(narration_file)}
+            volume={narration_volume}
+          />
+        )}
 
-      {/* Visual scenes with transitions */}
-      {scenes.map((scene, index) => {
-        const startFrame = scene.frame_inicio || 0;
-        const duration = scene.duracao_frames || 90;
-        const isLast = index === scenes.length - 1;
+        {/* Visual scenes with transitions */}
+        {scenes.map((scene, index) => {
+          const startFrame = scene.frame_inicio || 0;
+          const duration = scene.duracao_frames || 90;
+          const isLast = index === scenes.length - 1;
 
-        // Transition: visual overlap only — content starts at exact frame_inicio
-        // to keep text synchronized with narration audio
-        const transition = scene.transition || (index > 0 ? 'crossfade' : 'none');
-        const transitionDuration = scene.transition_duration || (transition !== 'none' ? 10 : 0);
+          // Transition: visual overlap only — content starts at exact frame_inicio
+          // to keep text synchronized with narration audio
+          const transition = scene.transition || (index > 0 ? 'crossfade' : 'none');
+          const transitionDuration = scene.transition_duration || (transition !== 'none' ? 10 : 0);
 
-        return (
-          <Sequence
-            key={scene.scene_id || index}
-            from={startFrame}
-            durationInFrames={duration}
-            name={scene.nome || scene.tipo || `Scene ${index + 1}`}
-          >
-            <SceneWithTransition
-              transition={transition as TransitionType}
-              transitionDuration={transitionDuration}
-              sceneDuration={duration}
+          return (
+            <Sequence
+              key={scene.scene_id || index}
+              from={startFrame}
+              durationInFrames={duration}
+              name={scene.nome || scene.tipo || `Scene ${index + 1}`}
             >
-              <DynamicScene
-                scene={scene}
-                palette={palette}
-                ctaText={cta_final}
-                ctaAction={cta_acao}
-                isLastScene={isLast}
-                sceneImages={scene_images as Record<string, string>}
-              />
-            </SceneWithTransition>
-          </Sequence>
-        );
-      })}
+              <SceneWithTransition
+                transition={transition as TransitionType}
+                transitionDuration={transitionDuration}
+                sceneDuration={duration}
+              >
+                <DynamicScene
+                  scene={scene}
+                  palette={palette}
+                  ctaText={cta_final}
+                  ctaAction={cta_acao}
+                  isLastScene={isLast}
+                  sceneImages={scene_images as Record<string, string>}
+                />
+              </SceneWithTransition>
+            </Sequence>
+          );
+        })}
 
-      {/* Global subtitles (synced to narration, rendered above all scenes) */}
-      {globalSubtitles && globalSubtitles.length > 0 && (
-        <AbsoluteFill style={{ zIndex: 50 }}>
-          <Subtitles
-            segments={globalSubtitles}
-            style={globalSubtitleStyle || 'default'}
-          />
-        </AbsoluteFill>
-      )}
+        {/* Global subtitles (synced to narration, rendered above all scenes) */}
+        {globalSubtitles && globalSubtitles.length > 0 && (
+          <AbsoluteFill style={{ zIndex: 50 }}>
+            <Subtitles
+              segments={globalSubtitles}
+              style={globalSubtitleStyle || 'default'}
+            />
+          </AbsoluteFill>
+        )}
 
-      {/* Progress bar (stories style) */}
-      {progressBarStyle !== false && progressBarStyle && (
-        <AbsoluteFill style={{ zIndex: 55, pointerEvents: 'none' }}>
-          <ProgressBar
-            segments={scenes.length}
-            segmentDurations={scenes.map(s => s.duracao_frames || 90)}
-            style={progressBarStyle}
-            color={progressBarColor || '#FFFFFF'}
-          />
-        </AbsoluteFill>
-      )}
+        {/* Progress bar (stories style) */}
+        {progressBarStyle !== false && progressBarStyle && (
+          <AbsoluteFill style={{ zIndex: 55, pointerEvents: 'none' }}>
+            <ProgressBar
+              segments={scenes.length}
+              segmentDurations={scenes.map(s => s.duracao_frames || 90)}
+              style={progressBarStyle}
+              color={progressBarColor || '#FFFFFF'}
+            />
+          </AbsoluteFill>
+        )}
+      </div>
     </AbsoluteFill>
   );
 };

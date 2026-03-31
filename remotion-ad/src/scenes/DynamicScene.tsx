@@ -3,7 +3,7 @@ import { AbsoluteFill } from 'remotion';
 import { TextOverlay, TextAnimation, getTextAnimationForScene } from '../components/TextOverlay';
 import { ProductImage } from '../components/ProductImage';
 import { CTAButton, CTAStyle } from '../components/CTAButton';
-import { CameraMotion, CameraEffect, ColorGrading, getDefaultCameraEffect, getDefaultOverlay } from '../components/CameraMotion';
+import { CameraMotion, CameraEffect, ColorGrading, SpringConfig, getDefaultCameraEffect, getDefaultOverlay } from '../components/CameraMotion';
 import { TextBackgroundBand, BandStyle, BandPosition } from '../components/TextBackgroundBand';
 import { LowerThird, LowerThirdStyle } from '../components/LowerThird';
 import { Subtitles, SubtitleSegment, SubtitleStyle } from '../components/Subtitles';
@@ -84,6 +84,14 @@ export interface SceneData {
     style?: KineticStyle;
     beats?: number[];
   };
+  // Motion spring config + easing
+  motion?: {
+    type?: string;
+    spring_config?: SpringConfig;
+    easing?: string;
+  };
+  // Film grain overlay (0-1)
+  grain?: number;
 }
 
 export interface SceneProps {
@@ -322,6 +330,18 @@ export const DynamicScene: React.FC<SceneProps> = ({
     />
   ) : null;
 
+  // Film grain overlay
+  const grainEl = scene.grain && scene.grain > 0 ? (
+    <AbsoluteFill style={{
+      opacity: scene.grain,
+      mixBlendMode: 'overlay',
+      pointerEvents: 'none',
+      zIndex: 40,
+      backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")`,
+      backgroundSize: '128px 128px',
+    }} />
+  ) : null;
+
   // If kinetic_text is set, use KineticText instead of TextOverlay
   const useKinetic = !!scene.kinetic_text;
 
@@ -338,6 +358,8 @@ export const DynamicScene: React.FC<SceneProps> = ({
           intensity={0.3}
           overlay="light"
           overlayOpacity={0.7}
+          spring_config={scene.motion?.spring_config}
+          easing={scene.motion?.easing}
         >
           {showProduct && (
             <ProductImage src={productSrc} size={280} entrance="spring-pop" startFrame={8} floating positionPercent={25} />
@@ -358,6 +380,7 @@ export const DynamicScene: React.FC<SceneProps> = ({
           <CTAButton text={buttonText} bgColor={amber(palette)} textColor={light(palette)} startFrame={Math.floor(scene.duracao_frames * 0.6)} style={scene.cta_style || 'solid'} fontFamily={sceneFontFamily || undefined} />
           {lowerThirdEl}
           {subtitlesEl}
+          {grainEl}
         </CameraMotion>
       );
     }
@@ -384,6 +407,7 @@ export const DynamicScene: React.FC<SceneProps> = ({
         <CTAButton text={buttonText} bgColor={amber(palette)} textColor={light(palette)} startFrame={Math.floor(scene.duracao_frames * 0.6)} style={scene.cta_style || 'solid'} fontFamily={sceneFontFamily || undefined} />
         {lowerThirdEl}
         {subtitlesEl}
+        {grainEl}
       </AbsoluteFill>
     );
   }
@@ -409,6 +433,7 @@ export const DynamicScene: React.FC<SceneProps> = ({
         )}
         {lowerThirdEl}
         {subtitlesEl}
+        {grainEl}
       </AbsoluteFill>
     );
   }
@@ -424,6 +449,8 @@ export const DynamicScene: React.FC<SceneProps> = ({
         overlayOpacity={overlayOpacity}
         blur={bgBlur}
         colorGrading={scene.color_grading}
+        spring_config={scene.motion?.spring_config}
+        easing={scene.motion?.easing}
       >
         {/* Flash transition for 'presente' scenes */}
         {tipo.includes('presente') && <FlashTransition />}
@@ -491,6 +518,7 @@ export const DynamicScene: React.FC<SceneProps> = ({
         {/* Lower third & subtitles */}
         {lowerThirdEl}
         {subtitlesEl}
+        {grainEl}
       </CameraMotion>
     );
   }
@@ -564,6 +592,7 @@ export const DynamicScene: React.FC<SceneProps> = ({
       />
       {lowerThirdEl}
       {subtitlesEl}
+      {grainEl}
     </AbsoluteFill>
   );
 };

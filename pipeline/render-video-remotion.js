@@ -189,6 +189,12 @@ function adaptScenePlan(plan) {
       descricao_visual: s.image_prompt || '',
       background_image: backgroundImage,
       camera_effect: cameraEffect,
+      // Motion spring config + easing passthrough
+      motion: {
+        type: motionType,
+        spring_config: s.motion?.spring_config || null,
+        easing: s.motion?.easing || null,
+      },
       text_overlay: s.text_overlay ? {
         texto: s.text_overlay,
         animacao: textAnim,
@@ -207,6 +213,8 @@ function adaptScenePlan(plan) {
       transition: TRANSITION_MAP[s.transition] || (i > 0 ? 'crossfade' : 'none'),
       transition_duration: s.transition_duration || 10,
       color_grading: s.color_grading || null,
+      // Film grain (0-1)
+      grain: s.grain || 0,
       // Auto text_band for scenes with text overlay (magazine readability)
       text_band: s.text_band || (s.text_overlay ? {
         style: 'gradient',
@@ -218,6 +226,8 @@ function adaptScenePlan(plan) {
       subtitles: s.subtitles || null,
       subtitle_style: s.subtitle_style || null,
       cta_style: s.cta_style || 'solid',
+      // Glow pulse for CTA scenes
+      ...(s.type === 'cta' && plan.glow_pulse ? { glow_pulse: plan.glow_pulse } : {}),
     });
 
     frameOffset += durationFrames;
@@ -259,6 +269,10 @@ function adaptScenePlan(plan) {
     background_music: musicPublic,
     background_music_volume: plan.music_volume || 0.15,
     cta_final: plan.scenes.find(s => s.type === 'cta')?.text_overlay || '',
+    // Global color grading — uniform LUT effect across all scenes
+    color_grading: plan.color_grading || null,
+    // Digital overlay for tech/futuristic themes
+    digital_overlay: plan.digital_overlay || null,
   };
 }
 

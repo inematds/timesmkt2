@@ -29,6 +29,12 @@ export interface ColorGrading {
   hueRotate?: number;   // degrees
 }
 
+export interface SpringConfig {
+  mass: number;
+  stiffness: number;
+  damping: number;
+}
+
 interface CameraMotionProps {
   src: string;
   effect?: CameraEffect;
@@ -38,6 +44,8 @@ interface CameraMotionProps {
   overlayOpacity?: number;
   blur?: number;
   colorGrading?: ColorGrading;
+  spring_config?: SpringConfig;
+  easing?: string; // easing function name for non-spring interpolations
 }
 
 export const CameraMotion: React.FC<CameraMotionProps> = ({
@@ -49,6 +57,8 @@ export const CameraMotion: React.FC<CameraMotionProps> = ({
   overlayOpacity = 0.4,
   blur = 0,
   colorGrading,
+  spring_config,
+  easing,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -103,20 +113,26 @@ export const CameraMotion: React.FC<CameraMotionProps> = ({
       break;
 
     case 'push-in': {
+      const pushSpringCfg = spring_config
+        ? { damping: spring_config.damping, stiffness: spring_config.stiffness, mass: spring_config.mass }
+        : { damping: 100, stiffness: 20, mass: 2 };
       const pushProgress = spring({
         frame,
         fps,
-        config: { damping: 100, stiffness: 20, mass: 2 },
+        config: pushSpringCfg,
       });
       scale = 1 + pushProgress * 0.25 * i;
       break;
     }
 
     case 'pull-out': {
+      const pullSpringCfg = spring_config
+        ? { damping: spring_config.damping, stiffness: spring_config.stiffness, mass: spring_config.mass }
+        : { damping: 100, stiffness: 20, mass: 2 };
       const pullProgress = spring({
         frame,
         fps,
-        config: { damping: 100, stiffness: 20, mass: 2 },
+        config: pullSpringCfg,
       });
       scale = 1.25 * i + 1 - pullProgress * 0.25 * i;
       break;
@@ -133,7 +149,8 @@ export const CameraMotion: React.FC<CameraMotionProps> = ({
 
     case 'none':
     default:
-      scale = 1;
+      // Ken Burns must always be active — minimum 1.06 even for "none"
+      scale = 1.06;
       break;
   }
 

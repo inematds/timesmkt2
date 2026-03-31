@@ -2,9 +2,16 @@
 
 ## Sobre a Marca
 
-**INEMA** é um ecossistema de educação em tecnologia, IA e transformação digital fundado por **Nei Eugenio Maldaner** — empreendedor com mais de 40 anos de trajetória em TI, educação corporativa e gestão comportamental.
+**INEMA** é um ecossistema de educação em tecnologia, IA e transformação digital fundado por **Nei Eugenio Maldaner** — empreendedor com mais de 40 anos de experiência em TI, educação corporativa e gestão comportamental.
 
-A marca nasce da SISNEMA Informática (fundada nos anos 90, +100.000 alunos, parceira Microsoft/Dell por 20 anos) e evolui para preparar pessoas para o mundo da Inteligência Artificial.
+O fundador acumula décadas de experiência que vão muito além da tecnologia — entende o mercado e o ser humano. Sua trajetória acompanha cada revolução digital:
+
+- **Anos 90:** Quando computadores eram intimidadores, ele ajudava pessoas a superarem a barreira. Fundou a SISNEMA Informática (parceira Microsoft/Dell por 20 anos, +100 mil alunos formados).
+- **Anos 2000:** Enquanto muitos viam a internet como "sem utilidade", ele já construía redes sociais — o portal inema.com.br foi vanguarda do que hoje são as redes.
+- **Anos 2010:** Já falava de IA, humanoides e automação quando ninguém prestava atenção. Registros em vídeos nas redes, manchetes de revistas e jornais comprovam.
+- **Hoje:** Continua na ativa com o **INEMA.CLUB** (plataforma gratuita de formação em IA) e a **comunidade INEMA VIP** — a mesma missão de sempre: ajudar pessoas a se desenvolverem.
+
+Uma experiência única de alguém que sempre esteve à frente, antecipando cada onda tecnológica, e que ainda se predispõe a continuar de perto, ajudando.
 
 **Tagline principal:**
 > "Atrás dos computadores tem gente. Use as máquinas/IA para escalar."

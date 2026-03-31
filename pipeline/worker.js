@@ -2176,6 +2176,78 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
     }
   }
 
+  // ── PHASE 2.5: Typography validation ────────────────────────────────────────
+  log(output_dir, 'video_pro', 'Phase 2.5: Typography validation...');
+  for (let i = 1; i <= video_count; i++) {
+    const idx = String(i).padStart(2, '0');
+    const planPath = vfFind(idx, '_scene_plan_motion.json');
+    if (!fs.existsSync(planPath)) continue;
+
+    try {
+      const plan = JSON.parse(fs.readFileSync(planPath, 'utf-8'));
+      let typoFixes = 0;
+
+      for (let s = 0; s < plan.scenes.length; s++) {
+        const scene = plan.scenes[s];
+
+        // Fix 1: Font size minimum (magazine style)
+        if (scene.text_overlay && scene.text_layout) {
+          const minSize = scene.type === 'hook' ? 96 : scene.type === 'cta' ? 88 : 60;
+          if (scene.text_layout.font_size && scene.text_layout.font_size < minSize) {
+            scene.text_layout.font_size = minSize;
+            typoFixes++;
+          }
+          // Fix 2: Font weight minimum for headlines
+          if (scene.text_layout.font_weight && scene.text_layout.font_weight < 700) {
+            scene.text_layout.font_weight = 700;
+            typoFixes++;
+          }
+        }
+
+        // Fix 3: Never text on image with has_text
+        if (scene.image_has_text === true && scene.text_overlay) {
+          scene.text_overlay = '';
+          typoFixes++;
+        }
+
+        // Fix 4: Position never bottom
+        if (scene.text_layout?.position === 'bottom') {
+          scene.text_layout.position = 'top';
+          typoFixes++;
+        }
+        if (scene.text_position === 'bottom') {
+          scene.text_position = 'top';
+          typoFixes++;
+        }
+
+        // Fix 5: Max 6 words
+        if (scene.text_overlay) {
+          const words = scene.text_overlay.trim().split(/\s+/);
+          if (words.length > 6) {
+            scene.text_overlay = words.slice(0, 6).join(' ');
+            typoFixes++;
+          }
+        }
+
+        // Fix 6: Ensure text shadow for contrast
+        if (scene.text_overlay && !scene.overlay) {
+          scene.overlay = 'dark';
+          scene.overlay_opacity = 0.45;
+          typoFixes++;
+        }
+      }
+
+      if (typoFixes > 0) {
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), 'utf-8');
+        log(output_dir, 'video_pro', `Typography: fixed ${typoFixes} violations in video ${idx}`);
+      } else {
+        log(output_dir, 'video_pro', `Typography: all checks passed for video ${idx}`);
+      }
+    } catch (e) {
+      log(output_dir, 'video_pro', `Typography validation error: ${e.message}`);
+    }
+  }
+
   // ── PHASE 3: Wait for user approval ─────────────────────────────────────────
   const approvalPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'approved.json');
   const rejectedPath = path.resolve(PROJECT_ROOT, output_dir, 'video', 'rejected.json');

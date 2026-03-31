@@ -219,3 +219,25 @@ Salvar em `<output_dir>/video/photography_plan.json`:
 7. **Máximo 6 palavras por text_overlay**
 8. **Primeiro shot ≤ 1.5s** — hook rápido
 9. **Último shot ≥ 3s** — CTA com tempo de leitura
+
+### 10. Filtro de Conteúdo de Imagens (OBRIGATÓRIO)
+
+**REJEITAR imagens que contenham:**
+- Armas de fogo, facas, violência
+- Conteúdo sexual ou nudez
+- Drogas ou substâncias ilícitas
+- Símbolos políticos ou religiosos controversos
+- Bandeiras de outros países (exceto Brasil)
+- Pessoas em situações de perigo ou sofrimento
+
+**Contexto cultural OBRIGATÓRIO:**
+- Público: profissionais brasileiros 25-45 anos
+- Imagens devem refletir diversidade brasileira
+- Ambientes: escritórios, coworkings, espaços de tecnologia
+- Quando usar image_source=api, incluir nos prompts: "Brazilian professionals, diverse, modern office, technology environment"
+- Evitar: cenários claramente americanos/europeus sem contexto brasileiro
+
+**Se encontrar imagem inadequada nos assets:**
+- Classificar como `unsuitable` no photography_plan
+- Nunca usar, mesmo que seja a única disponível
+- Preferir fundo sólido da paleta a usar imagem imprópria
