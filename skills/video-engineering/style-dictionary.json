@@ -146,29 +146,100 @@
       "mood": "urgency, conversion",
       "pro_secret": "Directional motion blur in fast transitions; speed ramp at proof/CTA"
     },
-    "neon_futurista": {
-      "label": "Neon Futurista (INEMA default)",
+    "inema_hightech": {
+      "label": "INEMA High-Tech Marketing (default)",
+      "description": "Mix dos Modelos 11 (Motion Graphics), 13 (Kinetic Typography), 14 (Short Vertical) e 20 (Performance Ad). Foco em informação + estímulo visual, não em movimento de câmera física.",
+      "base_models": ["11_motion_graphics", "13_kinetic_typography", "14_short_vertical", "20_performance_ad"],
+
       "remotion": {
-        "easing": "Easing.bezier(0.33, 1, 0.68, 1)",
-        "spring": { "mass": 1, "stiffness": 150, "damping": 15 },
-        "zoom": { "start": 1.0, "end": 1.12, "progression": "linear" }
+        "image_zoom": {
+          "comment": "Ken Burns infinito — TODA imagem deve ter zoom constante, nunca estática",
+          "easing": "Easing.out(Easing.sine)",
+          "zoom_start": 1.0,
+          "zoom_end": 1.08,
+          "apply_to": "all_scenes"
+        },
+        "text_spring": {
+          "comment": "Tipografia magnética — texto entra com 'quique' (bounce)",
+          "config": { "mass": 0.5, "stiffness": 200, "damping": 10 },
+          "effect": "scale_spring"
+        },
+        "cta_glow": {
+          "comment": "CTA final com pulso de brilho constante",
+          "type": "opacity_pulse",
+          "min_opacity": 0.85,
+          "max_opacity": 1.0,
+          "frequency_frames": 30
+        },
+        "digital_overlay": {
+          "comment": "Grade digital ou código passando — tema IA",
+          "type": "grid_or_code",
+          "opacity": 0.08,
+          "color": "#0099FF"
+        },
+        "speed_ramp_stages": [0, 0.8, 0.2, 1.0]
       },
-      "color": { "gamma": 1.0, "saturate": 0.95, "contrast": 1.1, "hueRotate": 10 },
-      "palette": { "primary": "#0099FF", "secondary": "#00FF88", "accent": "#FFD700", "bg": "#0D0D0D" },
+
+      "ffmpeg_post": {
+        "color_unification": "colorbalance=rs=0.1:bs=0.1:rm=0.05:gm=-0.05",
+        "sharpness": "unsharp=3:3:1.2:3:3:0.0",
+        "vignette": "vignette=pi/4",
+        "comment": "Teal & Orange Digital — sombras azuladas, realces nítidos"
+      },
+
+      "color": { "gamma": 1.05, "saturate": 1.1, "contrast": 1.15, "hueRotate": 10 },
+      "palette": { "primary": "#0099FF", "secondary": "#00FF88", "accent": "#FFD700", "bg": "#0D0D0D", "text": "#FFFFFF" },
+
       "motion_blur": "shutter_120",
       "grain": 0.01,
-      "speed_ramp": "on_reveals",
+      "speed_ramp": "on_each_reveal",
       "camera_shake": "none",
-      "cut_rhythm": "dynamic",
+      "cut_rhythm": "syncopated",
       "fps": 30,
       "bitrate": "-crf 19",
-      "transitions": ["crossfade", "fade_black", "cut"],
-      "mood": "technology, innovation, empowerment",
+
+      "transitions": {
+        "between_sections": "whip_pan_5frames_with_blur",
+        "within_section": "cut_or_crossfade",
+        "reveal_moments": "punch_zoom",
+        "never": "100_percent_plain_cuts"
+      },
+
+      "safe_zones": {
+        "format": "1080x1920",
+        "top_margin": "20%",
+        "bottom_margin": "30%",
+        "content_zone": "20%-70%",
+        "cta_price_zone": "50%-65%"
+      },
+
+      "sound_design": {
+        "on_reveal": "digital_beep",
+        "on_transition": "swoosh",
+        "on_data": "keyboard_type",
+        "background": "subtle_tech_ambient"
+      },
+
       "typography": {
-        "headline": "Oswald 900",
-        "body": "Montserrat 500",
-        "accent": "Poppins 700"
-      }
+        "headline": { "font": "Oswald", "weight": 900, "size_range": "96-140px", "animation": "spring_scale" },
+        "body": { "font": "Montserrat", "weight": 500, "size_range": "60-80px", "animation": "fade" },
+        "accent": { "font": "Poppins", "weight": 700, "size_range": "72-96px", "animation": "per_word" },
+        "data": { "font": "Space Grotesk", "weight": 700, "size_range": "80-120px", "animation": "typewriter" },
+        "cta": { "font": "Oswald", "weight": 900, "size_range": "88-120px", "animation": "glow_pulse" }
+      },
+
+      "editing_rules": {
+        "max_clip_static": "0s — NUNCA imagem sem zoom",
+        "angle_change_every": "2.5s",
+        "whip_pan_on_section_change": true,
+        "text_hierarchy": "headline 3-4x bigger than body",
+        "image_filter": "rejeitar armas, violência, conteúdo impróprio; contexto brasileiro",
+        "color_grading_unified": true
+      },
+
+      "mood": "high-tech, innovation, empowerment, urgency, conversion",
+
+      "prompt_instruction": "Gere componente Remotion para INEMA. Use Modelo 14 (Short Vertical). Imagens com escala progressiva 1.08x. Tipografia Cinética (Modelo 13) com spring nos headlines. Cores unificadas tom futurista azulado. CTA final com pulso de brilho (glow). Whip pan entre seções. Sound design com beeps digitais."
     }
   },
   "universal_rules": {
