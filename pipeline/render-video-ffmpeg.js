@@ -225,6 +225,7 @@ function renderVideo(scenePlanPath, outputPath) {
 
       const segOut = path.join(tmpDir, `seg_${String(i).padStart(2, '0')}.mp4`);
       segmentFiles.push(segOut);
+      let needsSplitFilter = false;
 
       // ── Motion config ─────────────────────────────────────────────────────────
       const motionConfig = scene.motion || {};
@@ -287,11 +288,12 @@ function renderVideo(scenePlanPath, outputPath) {
 
       if (imgSrc && fs.existsSync(imgSrc)) {
         if (isBanner || imageType === 'clip' || imageHasText) {
-          // Images with text: scale to fit without cropping (pad with black if needed)
-          vfParts.push(
-            `scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease,` +
-            `pad=${vidW}:${vidH}:(ow-iw)/2:(oh-ih)/2:color=black`
-          );
+          // Images with text (carousel 1:1 → reels 9:16): blurred background + sharp center
+          // Technique: scale image to fill 9:16 with heavy blur as background,
+          // then overlay the original scaled to fit on top — no cropping, no black bars
+          needsSplitFilter = true;
+          // Will be handled in the split filter section below
+          vfParts.push(`scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease`);
         } else {
           vfParts.push(`scale=${vidW * 2}:${vidH * 2}:force_original_aspect_ratio=increase`);
           vfParts.push(kbFilter);
@@ -334,6 +336,23 @@ function renderVideo(scenePlanPath, outputPath) {
           '-i', imgSrc,
           '-t', String(duration),
           '-vf', vf,
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-r', String(fps),
+          '-an',
+          '-y', segOut,
+        ];
+      } else if (needsSplitFilter && imgSrc && fs.existsSync(imgSrc)) {
+        // Image with text (e.g. carousel 1:1 → reels 9:16): blurred bg + sharp center
+        // Two inputs of same image: [0] = blurred fill background, [1] = sharp overlay centered
+        const blurBg = `[0:v]scale=${vidW}:${vidH}:force_original_aspect_ratio=increase,crop=${vidW}:${vidH},boxblur=20:5[bg];`;
+        const sharpOverlay = `[1:v]scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease[fg];`;
+        const composite = `[bg][fg]overlay=(W-w)/2:(H-h)/2,${fadeFilter}`;
+        ffArgs = [
+          '-loop', '1', '-i', imgSrc,
+          '-loop', '1', '-i', imgSrc,
+          '-t', String(duration),
+          '-filter_complex', `${blurBg}${sharpOverlay}${composite}`,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
           '-r', String(fps),
