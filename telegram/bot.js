@@ -3407,6 +3407,12 @@ function parseArgs(args) {
 // ── Start bot ───────────────────────────────────────────────────────────────
 
 bot.catch((err) => {
+  // Conflict error (409) — another bot instance is polling. Wait and retry via PM2.
+  if (err?.error_code === 409 || err?.message?.includes('Conflict')) {
+    console.error('[bot] Conflict detected — another instance is polling. Exiting in 10s for PM2 retry...');
+    setTimeout(() => process.exit(1), 10000); // PM2 will restart after delay
+    return;
+  }
   console.error('Bot error:', err.message);
 });
 
@@ -3686,6 +3692,16 @@ async function resumeInProgressCampaigns(monitoredSignals) {
     }
   }
 }
+
+// Handle unhandled rejections (polling conflicts, etc.)
+process.on('unhandledRejection', (err) => {
+  if (err?.error_code === 409 || String(err).includes('Conflict')) {
+    console.error('[bot] Polling conflict — waiting 10s before PM2 restart...');
+    setTimeout(() => process.exit(1), 10000);
+  } else {
+    console.error('[bot] Unhandled rejection:', err);
+  }
+});
 
 bot.start({
   onStart: async (botInfo) => {
