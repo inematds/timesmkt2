@@ -968,7 +968,8 @@ NARRATION (optional — ElevenLabs available):
 - Write a SHORT narration script — MAXIMUM 15-20 SECONDS of speech (~40-50 words for pt-BR)
 - This is a QUICK video (10-20s total) — the narration must be brief, punchy, and fit within the video duration
 - Do NOT reuse the pro narration script (it's 60s) — write a NEW shorter script
-- Generate audio: node pipeline/generate-audio.js ${output_dir}/audio/${task_name}_quick_narration.mp3 "<short_script>" rachel
+- Generate audio: node pipeline/generate-audio.js ${output_dir}/audio/${task_name}_quick_narration.mp3 "<short_script>" ${job.data.narrator || 'rachel'}
+- IMPORTANT: Use the SAME voice as the pro video (${job.data.narrator || 'rachel'}) — consistency matters
 - Set "narration_file" in the scene plan to the generated path
 - The video_length MUST match the narration duration (10-20s)` : `
 NARRATION: ElevenLabs not configured. Generate silent video — text overlays only.`;
@@ -1729,9 +1730,9 @@ ${langInstruction}${briefInstruction}
 
 For each of the ${video_count} video(s), write a narration script.
 Target duration: ${job.data.video_duration || 60} seconds (${Math.round((job.data.video_duration || 60) * 2.5)} words for pt-BR at ~2.5 words/sec).
-Then generate the audio using: node pipeline/generate-audio.js <output.mp3> "<script>" [rachel|bella|antoni]
+Then generate the audio using: node pipeline/generate-audio.js <output.mp3> "<script>" ${job.data.narrator || 'rachel'}
 Save narration to: ${output_dir}/audio/${task_name}_video_0N_narration.mp3
-Recommended voices: rachel (warm/emotional), bella (clear/friendly), antoni (professional)
+Voice: ${job.data.narrator || 'rachel'} — use this EXACT voice (must match quick video for consistency)
 
 IMPORTANT: ONLY generate narration audio files. Do NOT create scene plans or any other files.
 After generating all narrations, print: [NARRATION_DONE]`;
