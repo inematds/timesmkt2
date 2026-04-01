@@ -2257,10 +2257,28 @@ After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
           }
         }
 
-        // Fix 3: Never text on image with has_text
-        if (scene.image_has_text === true && scene.text_overlay) {
-          scene.text_overlay = '';
+        // Fix 3: Auto-detect image_has_text from filename + clear text overlay + force static motion
+        const imgPath = scene.image || '';
+        if (!scene.image_has_text && imgPath &&
+            /(_post|_stories|carousel_|oficial_|logo_|instagram|facebook|_ad\.|banner|calendar)/i.test(imgPath)) {
+          scene.image_has_text = true;
           typoFixes++;
+        }
+        if (scene.image_has_text === true) {
+          // Clear text overlay — image already has text
+          if (scene.text_overlay) {
+            scene.text_overlay = '';
+            typoFixes++;
+          }
+          // Force static/breathe motion — no zoom that crops text
+          if (scene.motion) {
+            const mt = typeof scene.motion === 'object' ? scene.motion.type : scene.motion;
+            if (mt && !['breathe', 'static', 'none'].includes(mt)) {
+              if (typeof scene.motion === 'object') scene.motion.type = 'breathe';
+              else scene.motion = { type: 'breathe' };
+              typoFixes++;
+            }
+          }
         }
 
         // Fix 4: Position never bottom
