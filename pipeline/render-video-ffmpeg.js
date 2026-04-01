@@ -343,22 +343,41 @@ function renderVideo(scenePlanPath, outputPath) {
           '-y', segOut,
         ];
       } else if (needsSplitFilter && imgSrc && fs.existsSync(imgSrc)) {
-        // Image with text (e.g. carousel 1:1 → reels 9:16): blurred bg + sharp center
-        // Two inputs of same image: [0] = blurred fill background, [1] = sharp overlay centered
-        const blurBg = `[0:v]scale=${vidW}:${vidH}:force_original_aspect_ratio=increase,crop=${vidW}:${vidH},boxblur=20:5[bg];`;
-        const sharpOverlay = `[1:v]scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease[fg];`;
-        const composite = `[bg][fg]overlay=(W-w)/2:(H-h)/2,${fadeFilter}`;
-        ffArgs = [
-          '-loop', '1', '-i', imgSrc,
-          '-loop', '1', '-i', imgSrc,
-          '-t', String(duration),
-          '-filter_complex', `${blurBg}${sharpOverlay}${composite}`,
-          '-c:v', 'libx264',
-          '-pix_fmt', 'yuv420p',
-          '-r', String(fps),
-          '-an',
-          '-y', segOut,
-        ];
+        // Image with text (carousel 1:1 → reels 9:16): fit image + background fill
+        // image_bg_mode: "dark" (default) = dark bg, "blur" = blurred image bg
+        const bgMode = scene.image_bg_mode || plan.image_bg_mode || 'dark';
+
+        if (bgMode === 'blur') {
+          // Blurred image as background + sharp center overlay
+          const blurBg = `[0:v]scale=${vidW}:${vidH}:force_original_aspect_ratio=increase,crop=${vidW}:${vidH},boxblur=20:5[bg];`;
+          const sharpOverlay = `[1:v]scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease[fg];`;
+          const composite = `[bg][fg]overlay=(W-w)/2:(H-h)/2,${fadeFilter}`;
+          ffArgs = [
+            '-loop', '1', '-i', imgSrc,
+            '-loop', '1', '-i', imgSrc,
+            '-t', String(duration),
+            '-filter_complex', `${blurBg}${sharpOverlay}${composite}`,
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-r', String(fps),
+            '-an',
+            '-y', segOut,
+          ];
+        } else {
+          // Dark background (default) — elegant, works with any image
+          const darkPad = `scale=${vidW}:${vidH}:force_original_aspect_ratio=decrease,` +
+            `pad=${vidW}:${vidH}:(ow-iw)/2:(oh-ih)/2:color=0x111111,${fadeFilter}`;
+          ffArgs = [
+            '-loop', '1', '-i', imgSrc,
+            '-t', String(duration),
+            '-vf', darkPad,
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-r', String(fps),
+            '-an',
+            '-y', segOut,
+          ];
+        }
       } else if (imgSrc && fs.existsSync(imgSrc)) {
         // Static image (raw or banner): loop for duration
         ffArgs = [
