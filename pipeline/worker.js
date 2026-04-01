@@ -1962,96 +1962,41 @@ Read the full photography_plan.json for all shots.`;
   // ── PHASE 2: Scene Plan (Sonnet — edit timeline) ──────────────────────────
   log(output_dir, 'video_pro', 'Phase 2: Creating scene plan (Sonnet)...');
 
-  const scenePlanPrompt = `You are the Video Editor Agent (Diretor de Edição). Follow the skill defined in skills/video-editor-agent/SKILL.md exactly.
+  // Read photography plan to inject directly (avoids Claude CLI reading from disk)
+  let photoPlanContent = '';
+  const photoPlanPath2 = path.resolve(PROJECT_ROOT, output_dir, 'video', 'photography_plan.json');
+  if (fs.existsSync(photoPlanPath2)) {
+    try { photoPlanContent = fs.readFileSync(photoPlanPath2, 'utf-8'); } catch {}
+  }
 
-You think like a PROFESSIONAL VIDEO EDITOR. You create 30-50 rapid cuts — NOT a 5-scene slideshow.
-The Photography Director has already defined the visual language. Your job is to create the EDIT TIMELINE following those decisions.
+  const scenePlanPrompt = `You are a Video Editor. Create an edit timeline (scene plan JSON) for a ${job.data.video_duration || 60}s video.
 
-STRICT RULES — DO NOT OVERRIDE THE PHOTOGRAPHY PLAN:
-- Use EXACTLY the images specified by the Photography Director for each shot
-- Use EXACTLY the fonts, sizes, and positions defined in the photography plan
-- Use EXACTLY the transitions defined between sections (NOT 100% cut)
-- If a shot has "image_has_text": true, do NOT add text_overlay (set it to null/empty)
-- If you need to split a shot into multiple cuts, keep the same image/font/motion
-- You decide TIMING only — the Photography Director decided everything else
+TASK: "${task_name}" — ${video_count} video(s). ${platform_targets.join(', ')}. ${langInstruction}
+${briefInstruction}
 
-Task: Create professional edit plans for ${video_count} videos — "${task_name}" campaign.
-Date: ${task_date}
-Platforms: ${platform_targets.join(', ')}
-${langInstruction}${briefInstruction}
+PHOTOGRAPHY PLAN (follow EXACTLY — do not override visual decisions):
+${photoPlanContent || photographyNote}
 
-STEP 1 — Read these knowledge files:
-- ${project_dir}/knowledge/brand_identity.md
-- ${project_dir}/knowledge/product_campaign.md
-- ${output_dir}/creative/creative_brief.json
-- ${output_dir}/video/photography_plan.json — CRITICAL: the Photography Director's visual decisions
-- skills/video-editor-agent/SKILL.md
-- skills/typography-on-image/SKILL.md
-
-STEP 2 — Image assets:
-${imageSourceSection}
-
-STEP 3 — Video briefs:
-${videoBriefsText}
-${photographyNote}
-
-STEP 4 — Audio:
+NARRATION:
 ${narrationNote}
+
+IMAGES:
+${imageSourceSection}
 ${musicInstructions}
 
-STEP 5 — Create the scene plan JSON following the Photography Director's visual decisions:
+RULES:
+- 25-40 cuts for 60s video. First cut ≤ 1.5s, last cut ≥ 3s
+- Never same motion.type 2x in a row. Never same text position 3x in a row
+- Cuts < 0.8s: no text. Cuts with text ≥ 1.2s. Max 6 words per overlay
+- text_overlay COMPLEMENTS narration (keyword, not full sentence)
+- position: ONLY "top" or "center", NEVER "bottom"
+- font_size: hook 96-140px, body 60-80px. font_weight: 900 headlines, 700 body
+- image_has_text: true → NO text_overlay, motion type "breathe" only
+- Sum of durations = video_length (±2s tolerance)
+- color_grading, film_grain, organic_shake as top-level fields
 
-Phase A: Analyze inputs, select narrative framework
-Phase B: Create Edit Decision List with 30-50 cuts (MANDATORY minimum 25 cuts for 60s)
-Phase C: Assign images to cuts (reuse creatively — same image, different treatment)
-Phase D: Assign motion, text animation, transitions per cut
-
-CRITICAL RULES (enforced — plan will be rejected if violated):
-- MINIMUM 25 cuts for a 60s video (target 30-50)
-- NEVER same motion.type on 2 consecutive cuts
-- NEVER same text_layout.position on 3 consecutive cuts
-- First cut duration ≤ 1.5s (hook must be fast)
-- Last cut duration ≥ 3s (CTA needs reading time)
-- Cuts < 0.8s: NO text_overlay (too fast to read)
-- Cuts with text_overlay ≥ 1.2s (minimum reading time)
-- Max 6 words per text_overlay
-- Text overlay COMPLEMENTS narration, never repeats it
-- Sum of all durations must equal video_length (tolerance ±2s)
-
-AUDIO-VISUAL SYNC (CRITICAL):
-- Each scene's "narration" field must contain the EXACT transcript segment spoken during that scene
-- Scene timing MUST match narration pacing — if narrator says 3 words in 1.5s, that scene is 1.5s
-- text_overlay must REINFORCE what narrator is saying (visual keyword, not the full sentence)
-- If narration file exists, estimate word timing (~2.5 words/second for pt-BR) and distribute scenes accordingly
-- Hook scene text appears BEFORE narrator speaks (visual lead)
-- CTA scene text stays visible AFTER narrator finishes (reading time)
-
-TYPOGRAPHY — MAGAZINE COVER STYLE:
-- text_layout.position: ONLY "top" or "center". NEVER "bottom"
-- text_layout.font_size: hook 96-140px, headlines 80-120px, body 60-80px. NEVER below 60px
-- text_layout.font_weight: 900 for headlines, 700 for body
-- text_layout.font_family: "Montserrat" (default), "Oswald" for impact, "Playfair Display" for editorial, "Poppins" for young/social
-- text_layout.line_height: 1.0 for tight headlines, 1.15 for body
-- text_layout.color: "#FFFFFF" on dark overlays, "#0D0D0D" on light — NEVER gray
-- Every scene with text MUST have text_layout with ALL fields (font_size, font_weight, font_family, position, color, line_height)
-
-GLOBAL VIDEO SETTINGS — include these top-level fields in the scene plan JSON:
-- "color_grading": { "gamma": 1.05, "saturate": 1.1, "contrast": 1.15, "hueRotate": 10 } — unified color across ALL scenes ("same camera, same day")
-- "film_grain": { "intensity": 0.03, "monochromatic": true, "lightLeak": true, "lightLeakOpacity": 0.1 } — cinematic grain + light leaks
-- "organic_shake": { "amplitude": 2, "frequency": 1 } — subtle hand-held feel (set amplitude 1-2 for premium, 3-5 for UGC)
-- Adjust values based on style_preset from Photography Director. For tech/futuristic: higher contrast, bluer hue. For warm/lifestyle: lower contrast, warmer grain.
-
-ADVANCED SCENE FIELDS (per scene):
-- "hud_text": { "brackets": true, "scanLine": true, "dataPoints": true, "accentColor": "#0099FF" } — for tech/futuristic scenes (hook, data, CTA)
-- "motion.speed_ramp_stages": [0, 0.8, 0.2, 1.0] — speed ramp (input%, output% pairs)
-- "lens_transition": "chromatic-glitch" — types: rack-focus, whip-blur, defocus-refocus, chromatic-glitch
-
-Save each plan to: ${output_dir}/video/${task_name}_video_0N_scene_plan_motion.json
-
-The JSON schema is defined in SKILL.md — follow it exactly.
-
-IMPORTANT: ONLY generate scene plan JSON files. Do NOT generate audio or run any render scripts.
-After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
+OUTPUT: Save to ${output_dir}/video/${task_name}_video_0N_scene_plan_motion.json
+Then print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
   await runClaude(scenePlanPrompt, 'video_pro', output_dir, 600000, { model: 'sonnet' });
 
