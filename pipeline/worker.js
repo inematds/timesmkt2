@@ -1959,8 +1959,8 @@ Read the full photography_plan.json for all shots.`;
     }
   }
 
-  // ── PHASE 2: Scene Plan (Opus — edit timeline) ────────────────────────────
-  log(output_dir, 'video_pro', 'Phase 2: Creating scene plan (Opus)...');
+  // ── PHASE 2: Scene Plan (Sonnet — edit timeline) ──────────────────────────
+  log(output_dir, 'video_pro', 'Phase 2: Creating scene plan (Sonnet)...');
 
   const scenePlanPrompt = `You are the Video Editor Agent (Diretor de Edição). Follow the skill defined in skills/video-editor-agent/SKILL.md exactly.
 
@@ -2053,7 +2053,7 @@ The JSON schema is defined in SKILL.md — follow it exactly.
 IMPORTANT: ONLY generate scene plan JSON files. Do NOT generate audio or run any render scripts.
 After saving all plans, print exactly: [VIDEO_APPROVAL_NEEDED] ${output_dir}`;
 
-  await runClaude(scenePlanPrompt, 'video_pro', output_dir, 900000, { model: 'opus' });
+  await runClaude(scenePlanPrompt, 'video_pro', output_dir, 600000, { model: 'sonnet' });
 
   // Extend lock after each heavy phase to prevent BullMQ stall
   await job.extendLock(job.token, 900000).catch(() => {});
